@@ -132,6 +132,11 @@ const filter = ref({
 })
 
 const cameraFilter = ref('all')
+const selectedModuleFilter = ref('all')
+const isEventsSubmenuOpen = ref(true)
+const simulationModule = ref('all')
+const isEditingCameraModules = ref(false)
+const cameraBeingEdited = ref(null)
 
 const systemLogs = ref([
   { timestamp: new Date().toLocaleTimeString(), type: 'info', message: 'System Diagnostics Portal initialized.' },
@@ -156,11 +161,77 @@ watch(events, (newVal, oldVal) => {
   newVal.forEach(e => {
     if (!oldIds.has(e.id)) {
       addLog('success', `[Webhook Ingest] Image received from camera ${e.camera_id} - Saved as ${e.image_path}`)
-      addLog('info', `[AI OCR] Vision Model Output: "${e.raw_ai_text ? e.raw_ai_text.replace(/\n/g, ' ') : 'None'}"`)
-      addLog(
-        e.is_plate_valid ? 'success' : 'warning', 
-        `[Validation] Plate ${e.is_plate_valid ? 'VALIDATED' : 'FAILED'} - District: ${e.district || 'N/A'}, Class: ${e.vehicle_class || 'N/A'}, Plate: ${e.plate_number || 'N/A'}`
-      )
+      
+      if (e.analytics_data) {
+        const mods = Object.keys(e.analytics_data)
+        addLog('info', `[AI Processing] Modules executed: [${mods.join(', ')}]`)
+        
+        // Module-specific log messages
+        if (e.analytics_data.anpr) {
+          const anpr = e.analytics_data.anpr
+          addLog(
+            e.is_plate_valid ? 'success' : 'warning',
+            `[ANPR] OCR: "${e.raw_ai_text ? e.raw_ai_text.replace(/\n/g, ' ') : 'None'}" | Validation: ${e.is_plate_valid ? 'PASS' : 'FAIL'} | District: ${e.district || 'N/A'} | Class: ${e.vehicle_class || 'N/A'} | Plate: ${e.plate_number || 'N/A'}`
+          )
+        }
+        if (e.analytics_data.face_detection) {
+          const fd = e.analytics_data.face_detection
+          addLog('info', `[Face Detection] Detected: ${fd.detected ? 'YES' : 'NO'} | Count: ${fd.count || 0} face(s)`)
+        }
+        if (e.analytics_data.perimeter_protection) {
+          const pp = e.analytics_data.perimeter_protection
+          addLog(pp.breach ? 'warning' : 'success', `[Perimeter] Zone: ${pp.zone_name || 'N/A'} | Breach: ${pp.breach ? 'ALERT!' : 'Secured'}`)
+        }
+        if (e.analytics_data.face_recognition && e.analytics_data.face_recognition.matches) {
+          const matches = e.analytics_data.face_recognition.matches
+          const known = matches.filter(m => m.confidence > 0).map(m => `${m.name} (${Math.round(m.confidence*100)}%)`).join(', ')
+          addLog('info', `[Face Rec] Identified: ${known || 'Unknown persons'}`)
+        }
+        if (e.analytics_data.people_counting) {
+          const pc = e.analytics_data.people_counting
+          addLog('info', `[People Counting] Current: ${pc.current_count} | In: ${pc.entered} | Out: ${pc.exited}`)
+        }
+        if (e.analytics_data.crowd_distribution) {
+          const cd = e.analytics_data.crowd_distribution
+          addLog(cd.crowd_level === 'high' || cd.crowd_level === 'critical' ? 'warning' : 'info', `[Crowd] Level: ${(cd.crowd_level||'').toUpperCase()} | Count: ~${cd.estimated_count} | Density: ${cd.density_percentage}%`)
+        }
+        if (e.analytics_data.vehicle_density) {
+          const vd = e.analytics_data.vehicle_density
+          addLog('info', `[Vehicle Density] Congestion: ${(vd.congestion_level||'').toUpperCase()} | Vehicles: ${vd.vehicle_count} | Density: ${vd.density_percentage}%`)
+        }
+        if (e.analytics_data.ppe_detection) {
+          const ppe = e.analytics_data.ppe_detection
+          addLog(ppe.violations_found ? 'warning' : 'success', `[PPE] ${ppe.violations_found ? 'VIOLATION detected!' : 'All personnel compliant'}`)
+        }
+        if (e.analytics_data.smart_object_detection && e.analytics_data.smart_object_detection.alert_triggered) {
+          addLog('warning', `[Smart Object] Alert: ${(e.analytics_data.smart_object_detection.alert_type||'').toUpperCase()} | ${e.analytics_data.smart_object_detection.details}`)
+        }
+        if (e.analytics_data.smart_sound_detection && e.analytics_data.smart_sound_detection.sound_alert_triggered) {
+          addLog('warning', `[Smart Sound] ALERT: ${(e.analytics_data.smart_sound_detection.inferred_sound_type||'').toUpperCase()} detected!`)
+        }
+        if (e.analytics_data.smd_plus) {
+          const smd = e.analytics_data.smd_plus
+          addLog('info', `[SMD+] Trigger: ${(smd.trigger_type||'').toUpperCase()} | Confidence: ${Math.round((smd.confidence||0)*100)}% | ${smd.description}`)
+        }
+        if (e.analytics_data.heat_map) {
+          addLog('info', `[Heat Map] Hotspots: ${(e.analytics_data.heat_map.hotspots||[]).length} | ${e.analytics_data.heat_map.description}`)
+        }
+        if (e.analytics_data.stereo_analysis) {
+          const sa = e.analytics_data.stereo_analysis
+          addLog(sa.anomaly_detected ? 'warning' : 'info', `[Stereo] Anomaly: ${sa.anomaly_detected ? sa.anomaly_type : 'None'} | Height: ${sa.estimated_height_m}m`)
+        }
+        if (e.analytics_data.video_metadata) {
+          const vm = e.analytics_data.video_metadata
+          addLog('info', `[Metadata] Humans: ${(vm.humans||[]).length} | Vehicles: ${(vm.motor_vehicles||[]).length} | Non-motor: ${(vm.non_motor_vehicles||[]).length}`)
+        }
+      } else {
+        // No analytics data - plain webhook
+        addLog('info', `[AI OCR] Vision Model Output: "${e.raw_ai_text ? e.raw_ai_text.replace(/\n/g, ' ') : 'None'}"`)
+        addLog(
+          e.is_plate_valid ? 'success' : 'warning', 
+          `[Validation] Plate ${e.is_plate_valid ? 'VALIDATED' : 'FAILED'} - District: ${e.district || 'N/A'}, Class: ${e.vehicle_class || 'N/A'}, Plate: ${e.plate_number || 'N/A'}`
+        )
+      }
     }
   })
 }, { deep: true })
@@ -196,9 +267,18 @@ const fetchEvents = async () => {
 // Compute overall statistics
 const stats = computed(() => {
   const total = events.value.length
-  const valid = events.value.filter(e => e.is_plate_valid).length
-  const rate = total > 0 ? Math.round((valid / total) * 100) : 0
-  return { total, valid, rate }
+  // Only ANPR events count toward plate accuracy
+  const anprEvents = events.value.filter(e => !!(e.detected_plate_text || (e.analytics_data && e.analytics_data.anpr)))
+  const valid = anprEvents.filter(e => e.is_plate_valid).length
+  const anprTotal = anprEvents.length
+  // Accuracy rate is ANPR-specific: valid plates / total ANPR attempts
+  const rate = anprTotal > 0 ? Math.round((valid / anprTotal) * 100) : (total > 0 ? 100 : 0)
+  // Non-ANPR events processed by other modules (face det, PPE, etc.)
+  const processed = events.value.filter(e => {
+    const hasNonAnprData = e.analytics_data && Object.keys(e.analytics_data).some(k => k !== 'anpr')
+    return hasNonAnprData && !anprEvents.includes(e)
+  }).length
+  return { total, valid, rate, anprTotal, processed }
 })
 
 // Districts list
@@ -233,6 +313,19 @@ const filteredEvents = computed(() => {
     }
     if (filter.value.district !== 'all' && event.district !== filter.value.district) {
       return false
+    }
+    // Filter by selected AI module
+    if (selectedModuleFilter.value !== 'all') {
+      const mod = selectedModuleFilter.value
+      if (mod === 'anpr') {
+        if (!event.detected_plate_text && (!event.analytics_data || !event.analytics_data.anpr)) {
+          return false
+        }
+      } else {
+        if (!event.analytics_data || event.analytics_data[mod] === undefined) {
+          return false
+        }
+      }
     }
     return true
   })
@@ -314,11 +407,228 @@ const triggerManualRefresh = async () => {
   addLog('success', 'System data refreshed successfully.')
 }
 
+const AVAILABLE_AI_MODULES = [
+  { value: 'anpr', label: 'ANPR (License Plates)' },
+  { value: 'face_detection', label: 'Face Detection' },
+  { value: 'perimeter_protection', label: 'Perimeter Protection' },
+  { value: 'face_recognition', label: 'Face Recognition' },
+  { value: 'video_metadata', label: 'Video Metadata' },
+  { value: 'smd_plus', label: 'SMD Plus (Motion)' },
+  { value: 'stereo_analysis', label: 'Stereo Analysis' },
+  { value: 'crowd_distribution', label: 'Crowd Distribution' },
+  { value: 'people_counting', label: 'People Counting' },
+  { value: 'vehicle_density', label: 'Vehicle Density' },
+  { value: 'heat_map', label: 'Heat Map' },
+  { value: 'ppe_detection', label: 'PPE Detection' },
+  { value: 'smart_object_detection', label: 'Smart Object' },
+  { value: 'smart_sound_detection', label: 'Smart Sound' }
+]
+
+const getCameraModulesList = (cam) => {
+  if (!cam.enabled_modules) return []
+  if (Array.isArray(cam.enabled_modules)) return cam.enabled_modules
+  return []
+}
+
+const getModuleLabel = (value) => {
+  const map = {
+    anpr: 'ANPR',
+    face_detection: 'Face Detect',
+    perimeter_protection: 'Perimeter',
+    face_recognition: 'Face Rec',
+    video_metadata: 'Metadata',
+    smd_plus: 'SMD+',
+    stereo_analysis: 'Stereo',
+    crowd_distribution: 'Crowd',
+    people_counting: 'Counter',
+    vehicle_density: 'Density',
+    heat_map: 'Heatmap',
+    ppe_detection: 'PPE',
+    smart_object_detection: 'Object',
+    smart_sound_detection: 'Sound'
+  }
+  return map[value] || value
+}
+
+const getModuleIcon = (value) => {
+  const map = {
+    anpr: 'scan',
+    face_detection: 'eye',
+    perimeter_protection: 'shield-alert',
+    face_recognition: 'user-check',
+    video_metadata: 'list',
+    smd_plus: 'zap',
+    stereo_analysis: 'box',
+    crowd_distribution: 'users',
+    people_counting: 'trending-up',
+    vehicle_density: 'car',
+    heat_map: 'flame',
+    ppe_detection: 'shield',
+    smart_object_detection: 'package',
+    smart_sound_detection: 'volume-2'
+  }
+  return map[value] || 'cpu'
+}
+
+const selectModuleFilter = (modVal) => {
+  selectedModuleFilter.value = modVal
+  currentModule.value = 'events'
+  nextTick(() => {
+    if (window.lucide) {
+      window.lucide.createIcons()
+    }
+  })
+}
+
+const isAnprEvent = (event) => {
+  if (!event) return false
+  return !!(event.detected_plate_text || (event.analytics_data && event.analytics_data.anpr))
+}
+
+const getActiveModulesLabels = (event) => {
+  if (!event || !event.analytics_data) return 'AI Analytics'
+  const keys = Object.keys(event.analytics_data)
+  if (keys.length === 0) return 'AI Analytics'
+  return keys.map(k => getModuleLabel(k)).join(', ')
+}
+
+const getEventDrawerTitle = (event) => {
+  if (!event) return 'AI Analysis'
+  if (isAnprEvent(event)) return 'ANPR · License Plate Analysis'
+  if (!event.analytics_data) return 'AI Analysis'
+  const keys = Object.keys(event.analytics_data)
+  if (keys.length === 1) return getModuleLabel(keys[0]) + ' Analysis'
+  if (keys.length > 1) return 'Multi-Module Analysis (' + keys.length + ')'
+  return 'AI Analysis'
+}
+
+const getEventBadgeLabel = (event) => {
+  if (!event) return { label: 'Processed', ok: true }
+  if (isAnprEvent(event)) {
+    return event.is_plate_valid
+      ? { label: 'Valid Plate', ok: true }
+      : { label: 'Plate Invalid', ok: false }
+  }
+  const alarms = getEventAlarms(event)
+  const danger = alarms.filter(a => a.type === 'danger')
+  if (danger.length > 0) return { label: danger[0].label, ok: false }
+  return { label: 'AI Processed', ok: true }
+}
+
+// Dynamic Surveillance Data rows based on active modules
+const getSurveillanceRows = (event) => {
+  if (!event) return []
+  const rows = []
+  rows.push({ label: 'Camera', value: getCameraName(event.camera_id) })
+  const loc = getCameraLocation(event.camera_id)
+  if (loc) rows.push({ label: 'Location', value: loc })
+
+  if (isAnprEvent(event)) {
+    rows.push({ label: 'District', value: event.district || '—' })
+    rows.push({ label: 'Class', value: event.vehicle_class || '—' })
+    rows.push({ label: 'Plate Number', value: event.plate_number || '—' })
+  } else if (event.analytics_data) {
+    const d = event.analytics_data
+    if (d.face_detection) {
+      rows.push({ label: 'Faces Detected', value: d.face_detection.detected ? d.face_detection.count + ' face(s)' : 'None' })
+    }
+    if (d.face_recognition && d.face_recognition.matches) {
+      const names = d.face_recognition.matches.filter(m => m.confidence > 0).map(m => m.name).join(', ')
+      rows.push({ label: 'Identified', value: names || 'Unknown' })
+    }
+    if (d.perimeter_protection) {
+      rows.push({ label: 'Zone', value: d.perimeter_protection.zone_name || 'N/A' })
+      rows.push({ label: 'Breach', value: d.perimeter_protection.breach ? 'YES' : 'Secured' })
+    }
+    if (d.people_counting) {
+      rows.push({ label: 'People Present', value: String(d.people_counting.current_count || 0) })
+      rows.push({ label: 'In / Out', value: (d.people_counting.entered || 0) + ' in / ' + (d.people_counting.exited || 0) + ' out' })
+    }
+    if (d.crowd_distribution) {
+      rows.push({ label: 'Crowd Level', value: (d.crowd_distribution.crowd_level || '—').toUpperCase() })
+      rows.push({ label: 'Est. Count', value: String(d.crowd_distribution.estimated_count || '—') })
+    }
+    if (d.vehicle_density) {
+      rows.push({ label: 'Traffic', value: (d.vehicle_density.congestion_level || '—').toUpperCase() })
+      rows.push({ label: 'Vehicles', value: String(d.vehicle_density.vehicle_count || '—') })
+    }
+    if (d.heat_map) {
+      rows.push({ label: 'Hotspots', value: (d.heat_map.hotspots || []).length + ' zone(s)' })
+    }
+    if (d.smd_plus) {
+      rows.push({ label: 'Motion Trigger', value: (d.smd_plus.trigger_type || '—').toUpperCase() })
+      rows.push({ label: 'Confidence', value: Math.round((d.smd_plus.confidence || 0) * 100) + '%' })
+    }
+    if (d.ppe_detection) {
+      rows.push({ label: 'PPE Violations', value: d.ppe_detection.violations_found ? 'Detected' : 'Compliant' })
+    }
+    if (d.smart_object_detection && d.smart_object_detection.alert_triggered) {
+      rows.push({ label: 'Object Alert', value: (d.smart_object_detection.alert_type || '—').toUpperCase() })
+    }
+    if (d.smart_sound_detection && d.smart_sound_detection.sound_alert_triggered) {
+      rows.push({ label: 'Sound Alert', value: (d.smart_sound_detection.inferred_sound_type || '—').toUpperCase() })
+    }
+    if (d.video_metadata) {
+      const humans = (d.video_metadata.humans || []).length
+      const vehicles = (d.video_metadata.motor_vehicles || []).length
+      rows.push({ label: 'Humans', value: String(humans) })
+      rows.push({ label: 'Motor Vehicles', value: String(vehicles) })
+    }
+    if (d.stereo_analysis) {
+      rows.push({ label: 'Anomaly', value: d.stereo_analysis.anomaly_detected ? (d.stereo_analysis.anomaly_type || 'Detected') : 'None' })
+      if (d.stereo_analysis.estimated_height_m) rows.push({ label: 'Est. Height', value: d.stereo_analysis.estimated_height_m + 'm' })
+    }
+    // Modules active
+    rows.push({ label: 'Modules', value: getActiveModulesLabels(event) })
+  }
+
+  rows.push({ label: 'Timestamp', value: formatFullDateTime(event.created_at) })
+  return rows
+}
+
+const getEventAlarms = (event) => {
+  const alarms = []
+  if (!event.analytics_data) return alarms
+
+  const data = event.analytics_data
+  if (data.ppe_detection && data.ppe_detection.violations_found) {
+    alarms.push({ type: 'danger', label: 'PPE Violation' })
+  }
+  if (data.perimeter_protection && data.perimeter_protection.breach) {
+    alarms.push({ type: 'danger', label: 'Perimeter Breach' })
+  }
+  if (data.stereo_analysis && data.stereo_analysis.anomaly_detected) {
+    alarms.push({ type: 'danger', label: data.stereo_analysis.anomaly_type.toUpperCase() })
+  }
+  if (data.smart_object_detection && data.smart_object_detection.alert_triggered) {
+    alarms.push({ type: 'warning', label: data.smart_object_detection.alert_type.toUpperCase() })
+  }
+  if (data.smart_sound_detection && data.smart_sound_detection.sound_alert_triggered) {
+    alarms.push({ type: 'danger', label: 'Sound Alert' })
+  }
+
+  // General detections as info tags if no alarms
+  if (alarms.length === 0) {
+    if (data.face_detection && data.face_detection.detected) {
+      alarms.push({ type: 'info', label: `Faces: ${data.face_detection.count}` })
+    }
+    if (data.people_counting) {
+      alarms.push({ type: 'info', label: `People: ${data.people_counting.current_count}` })
+    }
+    if (data.vehicle_density && data.vehicle_density.vehicle_count > 0) {
+      alarms.push({ type: 'info', label: `Vehicles: ${data.vehicle_density.vehicle_count}` })
+    }
+  }
+
+  return alarms
+}
+
 const cameras = ref([])
 const newCamera = ref({
   id: '',
   name: '',
-  location: ''
+  location: '',
+  enabled_modules: ['anpr']
 })
 const addCameraError = ref('')
 const isAddingCamera = ref(false)
@@ -349,12 +659,13 @@ const addCamera = async () => {
       body: JSON.stringify({
         id: newCamera.value.id.trim() || undefined,
         name: newCamera.value.name.trim(),
-        location: newCamera.value.location.trim() || undefined
+        location: newCamera.value.location.trim() || undefined,
+        enabled_modules: newCamera.value.enabled_modules
       })
     })
     if (response.ok) {
       addLog('success', `Registered Camera: "${newCamera.value.name}" (${newCamera.value.id || 'auto-id'})`)
-      newCamera.value = { id: '', name: '', location: '' }
+      newCamera.value = { id: '', name: '', location: '', enabled_modules: ['anpr'] }
       await fetchCameras()
     } else {
       const err = await response.json()
@@ -388,6 +699,53 @@ const deleteCamera = async (id) => {
     }
   } catch (error) {
     console.error('Failed to delete camera:', error)
+  }
+}
+
+const startEditCamera = (cam) => {
+  if (authRole.value !== 'admin') return
+  cameraBeingEdited.value = {
+    id: cam.id,
+    name: cam.name,
+    location: cam.location || '',
+    enabled_modules: getCameraModulesList(cam)
+  }
+  isEditingCameraModules.value = true
+  nextTick(() => {
+    if (window.lucide) {
+      window.lucide.createIcons()
+    }
+  })
+}
+
+const saveCameraEdit = async () => {
+  if (authRole.value !== 'admin' || !cameraBeingEdited.value) return
+  if (!cameraBeingEdited.value.name.trim()) {
+    alert('Camera Name is required')
+    return
+  }
+  try {
+    const response = await authFetch('/api/cameras', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: cameraBeingEdited.value.id,
+        name: cameraBeingEdited.value.name.trim(),
+        location: cameraBeingEdited.value.location.trim() || undefined,
+        enabled_modules: cameraBeingEdited.value.enabled_modules
+      })
+    })
+    if (response.ok) {
+      addLog('success', `Updated configuration for Camera: "${cameraBeingEdited.value.name}"`)
+      isEditingCameraModules.value = false
+      cameraBeingEdited.value = null
+      await fetchCameras()
+    } else {
+      const err = await response.json()
+      alert(err.message || 'Failed to save camera changes')
+    }
+  } catch (error) {
+    console.error('Failed to save camera changes:', error)
+    alert('Network error saving camera changes')
   }
 }
 
@@ -640,10 +998,61 @@ watch(currentModule, () => {
   })
 })
 
-const triggerSimulatedLog = async () => {
+const triggerSimulatedLog = async (modVal = 'all') => {
   if (authRole.value !== 'admin') return
-  addLog('info', '[Simulation] Dispatching mock POST /api/webhooks/camera payload...')
+  
+  const selectedMods = modVal === 'all' 
+    ? AVAILABLE_AI_MODULES.map(m => m.value)
+    : [modVal]
+
+  const modLabel = modVal === 'all' ? 'All Modules (Combo)' : (AVAILABLE_AI_MODULES.find(m => m.value === modVal)?.label || modVal)
+  addLog('info', `[Simulation] ▶ Starting simulation: ${modLabel}`)
+  
+  // Per-module context description
+  const moduleDescriptions = {
+    anpr: 'Simulating license plate capture - Dhaka Metro plate expected',
+    face_detection: 'Simulating face detection scenario: 2 persons detected',
+    perimeter_protection: 'Simulating perimeter breach at restricted_gate zone',
+    face_recognition: 'Simulating personnel identification: Abir Hasan (staff) + Unknown',
+    video_metadata: 'Simulating target metadata extraction: humans and vehicles',
+    smd_plus: 'Simulating SMD+ motion filter: human trigger at entrance corridor',
+    stereo_analysis: 'Simulating stereo depth analysis: height estimation',
+    crowd_distribution: 'Simulating crowd distribution mapping: medium density',
+    people_counting: 'Simulating people line-crossing counter: 4 present',
+    vehicle_density: 'Simulating vehicle density analysis: clear traffic',
+    heat_map: 'Simulating activity heat map: hotspots at center gate',
+    ppe_detection: 'Simulating PPE compliance check: safety vest violation',
+    smart_object_detection: 'Simulating smart object alert: loitering detected',
+    smart_sound_detection: 'Simulating smart sound analysis: no audio alerts'
+  }
+  
+  selectedMods.forEach(mod => {
+    if (moduleDescriptions[mod]) {
+      addLog('info', `[Simulation] ${moduleDescriptions[mod]}`)
+    }
+  })
+  
   try {
+    // Step 1: Upsert simulated camera with the correct enabled modules list
+    addLog('info', `[Simulation] Configuring simulated-test-cam with ${selectedMods.length} module(s)...`)
+    const camResponse = await authFetch('/api/cameras', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: 'simulated-test-cam',
+        name: 'Simulated Diagnostic Camera',
+        location: 'Virtual Test Lab',
+        enabled_modules: selectedMods
+      })
+    })
+    
+    if (!camResponse.ok) {
+      addLog('warning', '[Simulation] Failed to configure simulated camera on backend. Proceeding with webhook anyway...')
+    } else {
+      addLog('success', `[Simulation] Camera "simulated-test-cam" configured with modules: [${selectedMods.join(', ')}]`)
+    }
+    
+    // Step 2: Trigger Webhook Ingest
+    addLog('info', '[Simulation] Dispatching mock POST /api/webhooks/camera payload...')
     const response = await fetch('/api/webhooks/camera', {
       method: 'POST',
       headers: {
@@ -656,11 +1065,11 @@ const triggerSimulatedLog = async () => {
     })
     
     if (response.ok) {
-      addLog('success', '[Simulation] Webhook request accepted by server.')
+      addLog('success', `[Simulation] Webhook accepted – AI backend now processing image via ${modLabel}...`)
       setTimeout(async () => {
         await fetchEvents()
-        addLog('success', '[Simulation] Events refreshed. New event added!')
-      }, 1500)
+        addLog('success', '[Simulation] ✔ Complete. New event added to activity log.')
+      }, 2000)
     } else {
       addLog('warning', `[Simulation] Webhook request returned status ${response.status}`)
     }
@@ -674,6 +1083,10 @@ const getModuleTitle = () => {
     case 'dashboard':
       return 'Surveillance Dashboard'
     case 'events':
+      if (selectedModuleFilter.value !== 'all') {
+        const label = AVAILABLE_AI_MODULES.find(m => m.value === selectedModuleFilter.value)?.label || 'Module'
+        return `CCTV Activity Log - ${label}`
+      }
       return 'CCTV Activity Log'
     case 'cameras':
       return 'Camera Registry'
@@ -693,6 +1106,10 @@ const getModuleSubtitle = () => {
     case 'dashboard':
       return 'Real-time statistics and traffic monitoring analytics'
     case 'events':
+      if (selectedModuleFilter.value !== 'all') {
+        const label = AVAILABLE_AI_MODULES.find(m => m.value === selectedModuleFilter.value)?.label || 'Module'
+        return `Filtered feed showing only ${label} triggers and analytics telemetry`
+      }
       return 'All processed plate detection events and OCR telemetry'
     case 'cameras':
       return 'Manage registered CCTV stream feeds and ingestion hooks'
@@ -787,14 +1204,41 @@ onUnmounted(() => {
           <span>Dashboard</span>
         </button>
 
-        <button 
-          class="nav-item" 
-          :class="{ active: currentModule === 'events' }" 
-          @click="currentModule = 'events'"
-        >
-          <i data-lucide="activity"></i>
-          <span>Events Feed</span>
-        </button>
+        <div class="nav-group">
+          <button 
+            class="nav-item nav-group-header" 
+            @click="isEventsSubmenuOpen = !isEventsSubmenuOpen"
+            :class="{ active: currentModule === 'events' }"
+            style="width: 100%;"
+          >
+            <i data-lucide="activity"></i>
+            <span>Activity Logs</span>
+            <i data-lucide="chevron-down" class="submenu-arrow" :class="{ rotated: isEventsSubmenuOpen }"></i>
+          </button>
+          
+          <div v-show="isEventsSubmenuOpen" class="nav-submenu">
+            <button 
+              class="nav-submenu-item"
+              :class="{ active: currentModule === 'events' && selectedModuleFilter === 'all' }"
+              @click="selectModuleFilter('all')"
+            >
+              <i data-lucide="list"></i>
+              <span>All Events</span>
+            </button>
+            
+            <button 
+              v-for="mod in AVAILABLE_AI_MODULES" 
+              :key="mod.value"
+              class="nav-submenu-item"
+              :class="{ active: currentModule === 'events' && selectedModuleFilter === mod.value }"
+              @click="selectModuleFilter(mod.value)"
+              :title="mod.label"
+            >
+              <i :data-lucide="getModuleIcon(mod.value)"></i>
+              <span>{{ getModuleLabel(mod.value) }}</span>
+            </button>
+          </div>
+        </div>
 
         <button 
           class="nav-item" 
@@ -891,6 +1335,11 @@ onUnmounted(() => {
               <div class="stat-content">
                 <div class="stat-label">Total Events</div>
                 <div class="stat-value">{{ stats.total }}</div>
+                <div class="stat-sublabel" v-if="stats.anprTotal > 0 || stats.processed > 0">
+                  <span v-if="stats.anprTotal > 0">{{ stats.anprTotal }} ANPR</span>
+                  <span v-if="stats.anprTotal > 0 && stats.processed > 0"> · </span>
+                  <span v-if="stats.processed > 0">{{ stats.processed }} AI</span>
+                </div>
               </div>
             </div>
             <div class="dashboard-stat-card">
@@ -900,6 +1349,12 @@ onUnmounted(() => {
               <div class="stat-content">
                 <div class="stat-label">Valid Plates</div>
                 <div class="stat-value text-green">{{ stats.valid }}</div>
+                <div class="stat-sublabel" v-if="stats.anprTotal > 0">
+                  of {{ stats.anprTotal }} ANPR events
+                </div>
+                <div class="stat-sublabel" v-else style="color: var(--text-muted); opacity: 0.6;">
+                  No ANPR events yet
+                </div>
               </div>
             </div>
             <div class="dashboard-stat-card">
@@ -907,8 +1362,14 @@ onUnmounted(() => {
                 <i data-lucide="shield-check"></i>
               </div>
               <div class="stat-content">
-                <div class="stat-label">Accuracy Rate</div>
+                <div class="stat-label">ANPR Accuracy</div>
                 <div class="stat-value text-amber">{{ stats.rate }}%</div>
+                <div class="stat-sublabel" v-if="stats.anprTotal > 0">
+                  {{ stats.valid }}/{{ stats.anprTotal }} plates valid
+                </div>
+                <div class="stat-sublabel" v-else style="color: var(--text-muted); opacity: 0.6;">
+                  ANPR not active
+                </div>
               </div>
             </div>
             <div class="dashboard-stat-card">
@@ -921,6 +1382,7 @@ onUnmounted(() => {
               </div>
             </div>
           </div>
+
 
           <div class="dashboard-details-grid">
             <!-- Left Side: Recent Activity -->
@@ -948,17 +1410,26 @@ onUnmounted(() => {
                       <span class="event-cam">{{ getCameraName(event.camera_id) }}</span>
                       <span class="event-time">{{ formatTime(event.created_at) }}</span>
                     </div>
-                    <div class="recent-event-plate">
-                      <span v-if="event.is_plate_valid" class="event-plate-text">
+                     <div class="recent-event-plate">
+                      <span v-if="isAnprEvent(event) && event.is_plate_valid" class="event-plate-text">
                         {{ event.district }} {{ event.metro_prefix ? 'মেট্রো' : '' }} {{ event.vehicle_class }} {{ event.plate_number }}
                       </span>
-                      <span v-else class="event-plate-invalid">Invalid Plate Structure</span>
+                      <span v-else-if="isAnprEvent(event)" class="event-plate-invalid">Invalid Plate Structure</span>
+                      <span v-else class="event-plate-text" style="color: var(--accent-primary); font-size: 0.7rem; font-weight: 600;">
+                        {{ getActiveModulesLabels(event) }}
+                      </span>
                     </div>
                   </div>
                   <div class="recent-event-badge">
-                    <span class="badge-dot" :class="event.is_plate_valid ? 'bg-green' : 'bg-red'"></span>
-                    <span class="badge-text" :class="event.is_plate_valid ? 'text-green' : 'text-red'">
-                      {{ event.is_plate_valid ? 'Valid' : 'Failed' }}
+                    <span v-if="isAnprEvent(event)" style="display: flex; align-items: center; gap: 0.35rem;">
+                      <span class="badge-dot" :class="event.is_plate_valid ? 'bg-green' : 'bg-red'"></span>
+                      <span class="badge-text" :class="event.is_plate_valid ? 'text-green' : 'text-red'">
+                        {{ event.is_plate_valid ? 'Valid' : 'Failed' }}
+                      </span>
+                    </span>
+                    <span v-else style="display: flex; align-items: center; gap: 0.35rem;">
+                      <span class="badge-dot bg-blue" style="background: var(--accent-primary);"></span>
+                      <span class="badge-text text-blue" style="color: var(--accent-primary);">Processed</span>
                     </span>
                   </div>
                 </div>
@@ -1008,7 +1479,7 @@ onUnmounted(() => {
                       <span>{{ dist.count }}</span>
                     </div>
                     <div class="breakdown-bar-bg">
-                      <div class="breakdown-bar-fill" :style="{ width: (dist.count / stats.total * 100) + '%' }"></div>
+                      <div class="breakdown-bar-fill" :style="{ width: (dist.count / districtBreakdown[0].count * 100) + '%' }"></div>
                     </div>
                   </div>
                 </div>
@@ -1098,7 +1569,11 @@ onUnmounted(() => {
               v-for="event in filteredEvents" 
               :key="event.id" 
               class="event-grid-card"
-              :class="{ 'border-green-glow': event.is_plate_valid, 'border-red-glow': !event.is_plate_valid }"
+              :class="{ 
+                'border-green-glow': isAnprEvent(event) && event.is_plate_valid, 
+                'border-red-glow': isAnprEvent(event) && !event.is_plate_valid,
+                'border-blue-glow': !isAnprEvent(event)
+              }"
               @click="selectEvent(event)"
             >
               <div class="event-card-img">
@@ -1106,20 +1581,40 @@ onUnmounted(() => {
                 <span class="event-card-time">{{ formatTime(event.created_at) }}</span>
               </div>
               <div class="event-card-content">
-                <div class="event-card-meta">
+                <div class="event-card-meta" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
                   <span class="cam-lbl">
                     <i data-lucide="video" style="width: 12px; height: 12px; display: inline-block; vertical-align: middle; margin-right: 2px;"></i>
                     {{ getCameraName(event.camera_id) }}
                   </span>
                 </div>
+                
+                <!-- Alarms / Telemetry tags -->
+                <div v-if="getEventAlarms(event).length > 0" class="event-card-alarms" style="display: flex; flex-wrap: wrap; gap: 0.2rem; margin-top: 0.25rem; margin-bottom: 0.25rem;">
+                  <span v-for="alarm in getEventAlarms(event)" :key="alarm.label" class="badge-role" 
+                    :style="
+                      alarm.type === 'danger' ? 'background: rgba(239,68,68,0.15); color: #f87171; border: 1px solid rgba(239,68,68,0.3); font-size: 0.5rem; padding: 0.05rem 0.2rem;' :
+                      alarm.type === 'warning' ? 'background: rgba(245,158,11,0.15); color: #fbbf24; border: 1px solid rgba(245,158,11,0.3); font-size: 0.5rem; padding: 0.05rem 0.2rem;' :
+                      'background: rgba(59,130,246,0.15); color: #60a5fa; border: 1px solid rgba(59,130,246,0.3); font-size: 0.5rem; padding: 0.05rem 0.2rem;'
+                    "
+                  >
+                    {{ alarm.label }}
+                  </span>
+                </div>
+
                 <div class="event-card-plate">
-                  <div v-if="event.is_plate_valid" class="card-plate-rendered">
-                    <div class="card-plate-top">{{ event.district }} {{ event.metro_prefix ? 'মেট্রো' : '' }} {{ event.vehicle_class }}</div>
-                    <div class="card-plate-bottom">{{ event.plate_number }}</div>
+                  <div v-if="isAnprEvent(event)">
+                    <div v-if="event.is_plate_valid" class="card-plate-rendered">
+                      <div class="card-plate-top">{{ event.district }} {{ event.metro_prefix ? 'মেট্রো' : '' }} {{ event.vehicle_class }}</div>
+                      <div class="card-plate-bottom">{{ event.plate_number }}</div>
+                    </div>
+                    <div v-else class="card-plate-error">
+                      <i data-lucide="alert-triangle" style="width: 14px; height: 14px; vertical-align: middle; margin-right: 4px;"></i>
+                      OCR Format Invalid
+                    </div>
                   </div>
-                  <div v-else class="card-plate-error">
-                    <i data-lucide="alert-triangle" style="width: 14px; height: 14px; vertical-align: middle; margin-right: 4px;"></i>
-                    OCR Format Invalid
+                  <div v-else class="card-analytics-summary" style="font-size: 0.75rem; color: var(--accent-primary); text-align: left; padding: 0.25rem 0; display: flex; align-items: center; gap: 4px;">
+                    <i data-lucide="cpu" style="width: 13px; height: 13px; color: var(--accent-primary);"></i>
+                    <span style="font-weight: 550; color: var(--accent-primary);">{{ getActiveModulesLabels(event) }}</span>
                   </div>
                 </div>
               </div>
@@ -1166,13 +1661,22 @@ onUnmounted(() => {
                     <div class="camera-row font-mono" style="font-size: 0.75rem; color: var(--accent-primary);">
                       ID: {{ cam.id }}
                     </div>
+                    <div class="camera-row" style="display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.5rem;">
+                      <span v-for="mod in getCameraModulesList(cam)" :key="mod" class="badge-role" style="font-size: 0.55rem; padding: 0.05rem 0.25rem; text-transform: uppercase; background: rgba(99, 102, 241, 0.15); color: var(--accent-primary); border: 1px solid rgba(99, 102, 241, 0.3);">
+                        {{ getModuleLabel(mod) }}
+                      </span>
+                    </div>
                   </div>
 
                   <!-- Actions (Admin only) -->
-                  <div v-if="authRole === 'admin'" class="camera-actions-row">
-                    <button class="delete-btn-card" @click="deleteCamera(cam.id)">
+                  <div v-if="authRole === 'admin'" class="camera-actions-row" style="display: flex; gap: 0.5rem; justify-content: space-between;">
+                    <button class="submit-btn outline" style="font-size: 0.7rem; padding: 0.35rem 0.6rem; border-radius: 6px; height: auto; margin: 0;" @click="startEditCamera(cam)">
+                      <i data-lucide="edit-3" style="width: 12px; height: 12px; display: inline-block; vertical-align: middle; margin-right: 4px;"></i>
+                      Edit Config
+                    </button>
+                    <button class="delete-btn-card" style="margin: 0;" @click="deleteCamera(cam.id)">
                       <i data-lucide="trash-2" style="width: 13px; height: 13px; display: inline-block; vertical-align: middle; margin-right: 4px;"></i>
-                      Unregister Camera
+                      Unregister
                     </button>
                   </div>
                 </div>
@@ -1197,6 +1701,16 @@ onUnmounted(() => {
                 <div class="form-group">
                   <label>Location (optional)</label>
                   <input type="text" placeholder="e.g. Warehouse Entrance" v-model="newCamera.location">
+                </div>
+
+                <div class="form-group">
+                  <label>Enabled AI Modules</label>
+                  <div class="modules-grid" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.35rem; margin-top: 0.25rem; font-size: 0.7rem; max-height: 150px; overflow-y: auto; padding: 0.4rem; border: 1px solid var(--border-color); border-radius: 6px; background: rgba(0,0,0,0.25);">
+                    <div v-for="mod in AVAILABLE_AI_MODULES" :key="mod.value" class="module-check-item" style="display: flex; align-items: center; gap: 0.35rem; color: var(--text-secondary);">
+                      <input type="checkbox" :id="'mod-' + mod.value" :value="mod.value" v-model="newCamera.enabled_modules">
+                      <label :for="'mod-' + mod.value" style="margin: 0; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" :title="mod.label">{{ mod.label }}</label>
+                    </div>
+                  </div>
                 </div>
 
                 <div v-if="addCameraError" class="form-error">
@@ -1457,7 +1971,7 @@ onUnmounted(() => {
             </div>
 
             <!-- Diagnostics Action Toolbar -->
-            <div class="diagnostics-sidebar">
+            <div class="diagnostics-sidebar" style="max-height: calc(100vh - 120px); overflow-y: auto; padding-right: 0.25rem;">
               <div class="diagnostics-tool-card">
                 <h3>Developer Diagnostics</h3>
                 <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1rem; text-align: left;">
@@ -1465,23 +1979,46 @@ onUnmounted(() => {
                 </p>
 
                 <div class="tool-action-group">
-                  <h4 style="font-size: 0.85rem; margin-bottom: 0.5rem; text-align: left;">CURL Webhook Simulator</h4>
-                  <div class="curl-code-snippet">
-                    <pre>curl -X POST -H "Content-Type: application/json" \
-  -d '{"camera_id": "test-cam", "image": "data:image/jpeg;base64,..."}' \
-  http://localhost:8080/api/webhooks/camera</pre>
+                  <h4 style="font-size: 0.85rem; margin-bottom: 0.5rem; text-align: left;">Select Module to Simulate</h4>
+                  <div class="form-group" style="margin-bottom: 1rem;">
+                    <select v-model="simulationModule" style="width: 100%; background: rgba(0,0,0,0.4); border: 1px solid var(--border-color); color: var(--text-main); padding: 0.5rem; border-radius: 6px; font-family: inherit; font-size: 0.85rem; outline: none; transition: border-color 0.2s;">
+                      <option value="all">All Modules (Combo)</option>
+                      <option v-for="mod in AVAILABLE_AI_MODULES" :key="mod.value" :value="mod.value">
+                        {{ mod.label }}
+                      </option>
+                    </select>
                   </div>
                   
                   <button 
                     class="submit-btn outline w-full" 
                     :disabled="authRole !== 'admin'" 
-                    @click="triggerSimulatedLog" 
-                    style="margin-top: 1rem;"
+                    @click="triggerSimulatedLog(simulationModule)" 
                   >
-                    <i data-lucide="terminal" style="width: 16px; height: 16px;"></i>
-                    Simulate Webhook event
+                    <i data-lucide="play" style="width: 16px; height: 16px;"></i>
+                    Simulate Webhook
                   </button>
-                  <p v-if="authRole !== 'admin'" style="font-size: 0.7rem; color: var(--status-error); margin-top: 0.5rem; text-align: left;">
+                </div>
+
+                <div class="tool-action-group" style="margin-top: 1.5rem; border-top: 1px solid var(--card-border); padding-top: 1rem;">
+                  <h4 style="font-size: 0.85rem; margin-bottom: 0.5rem; text-align: left;">Quick Simulators</h4>
+                  <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.4rem;">
+                    <button 
+                      v-for="mod in AVAILABLE_AI_MODULES" 
+                      :key="mod.value" 
+                      class="submit-btn outline" 
+                      style="font-size: 0.65rem; padding: 0.4rem; justify-content: flex-start; text-align: left; height: auto;"
+                      :disabled="authRole !== 'admin'"
+                      @click="triggerSimulatedLog(mod.value)"
+                      :title="'Simulate ' + mod.label"
+                    >
+                      <i :data-lucide="getModuleIcon(mod.value)" style="width: 12px; height: 12px; margin-right: 0.25rem;"></i>
+                      <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-block; width: calc(100% - 16px);">{{ getModuleLabel(mod.value) }}</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div v-if="authRole !== 'admin'" style="margin-top: 0.75rem;">
+                  <p style="font-size: 0.7rem; color: var(--status-error); text-align: left;">
                     * Simulation triggers require Administrator privileges.
                   </p>
                 </div>
@@ -1492,6 +2029,50 @@ onUnmounted(() => {
       </div>
     </main>
 
+    <!-- Edit Camera Modal Overlay -->
+    <div v-if="isEditingCameraModules" class="modal-overlay" @click="isEditingCameraModules = false">
+      <div class="modal-content glass-panel" @click.stop>
+        <div class="modal-header">
+          <h3>Edit Camera Configuration</h3>
+          <button class="drawer-close-btn" style="position: static; margin-left: auto;" @click="isEditingCameraModules = false">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        
+        <div class="modal-body" v-if="cameraBeingEdited">
+          <div class="form-group" style="text-align: left; margin-bottom: 0.75rem;">
+            <label style="display: block; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.25rem;">Camera ID (Read-only)</label>
+            <input type="text" :value="cameraBeingEdited.id" disabled style="width: 100%; background: rgba(255,255,255,0.05); color: var(--text-muted); border: 1px solid var(--border-color); padding: 0.5rem; border-radius: 6px;">
+          </div>
+          
+          <div class="form-group" style="text-align: left; margin-bottom: 0.75rem;">
+            <label style="display: block; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.25rem;">Camera Name</label>
+            <input type="text" v-model="cameraBeingEdited.name" style="width: 100%; background: rgba(0,0,0,0.3); color: var(--text-main); border: 1px solid var(--border-color); padding: 0.5rem; border-radius: 6px;">
+          </div>
+          
+          <div class="form-group" style="text-align: left; margin-bottom: 0.75rem;">
+            <label style="display: block; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.25rem;">Location</label>
+            <input type="text" v-model="cameraBeingEdited.location" style="width: 100%; background: rgba(0,0,0,0.3); color: var(--text-main); border: 1px solid var(--border-color); padding: 0.5rem; border-radius: 6px;">
+          </div>
+          
+          <div class="form-group" style="text-align: left; margin-bottom: 0.75rem;">
+            <label style="display: block; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.25rem;">Enabled AI Modules</label>
+            <div class="modules-grid" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.35rem; margin-top: 0.25rem; font-size: 0.7rem; max-height: 150px; overflow-y: auto; padding: 0.4rem; border: 1px solid var(--border-color); border-radius: 6px; background: rgba(0,0,0,0.25);">
+              <div v-for="mod in AVAILABLE_AI_MODULES" :key="mod.value" class="module-check-item" style="display: flex; align-items: center; gap: 0.35rem; color: var(--text-secondary);">
+                <input type="checkbox" :id="'edit-mod-' + mod.value" :value="mod.value" v-model="cameraBeingEdited.enabled_modules">
+                <label :for="'edit-mod-' + mod.value" style="margin: 0; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" :title="mod.label">{{ mod.label }}</label>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem;">
+          <button class="submit-btn outline" @click="isEditingCameraModules = false" style="margin: 0;">Cancel</button>
+          <button class="submit-btn" @click="saveCameraEdit" style="margin: 0;">Save Config</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Global Sliding Event Detail Drawer Overlay -->
     <div class="drawer-overlay" :class="{ open: selectedEvent !== null }" @click="selectedEvent = null"></div>
     <div class="drawer-panel" :class="{ open: selectedEvent !== null }">
@@ -1501,20 +2082,23 @@ onUnmounted(() => {
           <i data-lucide="x"></i>
         </button>
 
-        <h2 class="drawer-title">Recognition Analysis</h2>
+        <h2 class="drawer-title">{{ getEventDrawerTitle(selectedEvent) }}</h2>
         
         <div class="drawer-section">
           <!-- Image -->
           <div class="drawer-image-container">
             <img :src="'/uploads/' + selectedEvent.image_path">
-            <span class="badge img-overlay-badge" :class="selectedEvent.is_plate_valid ? 'badge-success' : 'badge-error'">
-              {{ selectedEvent.is_plate_valid ? 'Valid Plate' : 'Validation Failed' }}
+            <span 
+              class="badge img-overlay-badge" 
+              :class="getEventBadgeLabel(selectedEvent).ok ? 'badge-success' : 'badge-error'"
+            >
+              {{ getEventBadgeLabel(selectedEvent).label }}
             </span>
           </div>
         </div>
 
-        <div class="drawer-section">
-          <!-- License Plate rendered -->
+        <!-- License Plate rendered (ANPR only) -->
+        <div v-if="isAnprEvent(selectedEvent)" class="drawer-section">
           <div class="plate-box-container">
             <div v-if="selectedEvent.is_plate_valid" class="bangla-plate-render">
               <div class="plate-line-top">
@@ -1534,34 +2118,221 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <!-- Module summary badge strip (non-ANPR) -->
+        <div v-else-if="selectedEvent.analytics_data" class="drawer-section" style="padding-bottom: 0;">
+          <div style="display: flex; flex-wrap: wrap; gap: 0.3rem;">
+            <span 
+              v-for="alarm in getEventAlarms(selectedEvent)" 
+              :key="alarm.label"
+              class="badge-role"
+              :style="alarm.type === 'danger' ? 'background:rgba(239,68,68,0.15);color:#f87171;border:1px solid rgba(239,68,68,0.3);font-size:0.65rem;padding:0.15rem 0.4rem;' : alarm.type === 'warning' ? 'background:rgba(245,158,11,0.15);color:#fbbf24;border:1px solid rgba(245,158,11,0.3);font-size:0.65rem;padding:0.15rem 0.4rem;' : 'background:rgba(59,130,246,0.15);color:#60a5fa;border:1px solid rgba(59,130,246,0.3);font-size:0.65rem;padding:0.15rem 0.4rem;'"
+            >{{ alarm.label }}</span>
+            <span v-if="getEventAlarms(selectedEvent).length === 0" class="badge-role" style="background:rgba(99,102,241,0.15);color:var(--accent-primary);border:1px solid rgba(99,102,241,0.3);font-size:0.65rem;padding:0.15rem 0.4rem;">
+              <i data-lucide="cpu" style="width:11px;height:11px;display:inline;vertical-align:middle;margin-right:3px;"></i>
+              AI Processed
+            </span>
+          </div>
+        </div>
+
         <div class="drawer-section metadata-section">
           <h3>Surveillance Data</h3>
           <div class="meta-grid">
-            <div class="meta-row">
-              <span class="meta-label">Camera</span>
-              <span class="meta-val">{{ getCameraName(selectedEvent.camera_id) }}</span>
-            </div>
-            <div class="meta-row" v-if="selectedEvent.camera_id && getCameraLocation(selectedEvent.camera_id)">
-              <span class="meta-label">Location</span>
-              <span class="meta-val">{{ getCameraLocation(selectedEvent.camera_id) }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">District</span>
-              <span class="meta-val">{{ selectedEvent.district || '—' }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">Class</span>
-              <span class="meta-val">{{ selectedEvent.vehicle_class || '—' }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">Plate number</span>
-              <span class="meta-val">{{ selectedEvent.plate_number || '—' }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">Timestamp</span>
-              <span class="meta-val font-mono">{{ formatFullDateTime(selectedEvent.created_at) }}</span>
+            <div class="meta-row" v-for="row in getSurveillanceRows(selectedEvent)" :key="row.label">
+              <span class="meta-label">{{ row.label }}</span>
+              <span class="meta-val" :class="{ 'font-mono': row.label === 'Timestamp' }">{{ row.value }}</span>
             </div>
           </div>
+        </div>
+
+        <!-- Dynamic Analytics Modules Data Panels -->
+        <div v-if="selectedEvent.analytics_data" class="drawer-analytics-panels" style="display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1rem;">
+          
+          <!-- PPE Detection Panel -->
+          <div v-if="selectedEvent.analytics_data.ppe_detection" class="drawer-section analytics-card" style="border: 1px solid rgba(239,68,68,0.25); background: rgba(239,68,68,0.03); padding: 0.75rem; border-radius: 8px; margin-bottom: 0.5rem;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+              <h3 style="font-size: 0.9rem; font-weight: 700; color: #f87171; display: flex; align-items: center; gap: 0.35rem; margin: 0; border: none; padding: 0;">
+                <i data-lucide="shield-alert" style="width: 16px; height: 16px;"></i>
+                PPE Compliance Scan
+              </h3>
+              <span class="badge" :style="selectedEvent.analytics_data.ppe_detection.violations_found ? 'background: rgba(239,68,68,0.15); color: #f87171;' : 'background: rgba(16,185,129,0.15); color: #34d399;'">
+                {{ selectedEvent.analytics_data.ppe_detection.violations_found ? 'Violations' : 'Compliant' }}
+              </span>
+            </div>
+            <div v-if="selectedEvent.analytics_data.ppe_detection.details && selectedEvent.analytics_data.ppe_detection.details.length > 0" style="display: flex; flex-direction: column; gap: 0.35rem;">
+              <div v-for="(person, idx) in selectedEvent.analytics_data.ppe_detection.details" :key="idx" style="font-size: 0.75rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 0.25rem; background: rgba(0,0,0,0.2); padding: 0.4rem; border-radius: 4px;">
+                <div style="font-weight: 600; color: var(--text-main);">Person #{{ person.person_index || (idx + 1) }} Check:</div>
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.25rem;">
+                  <div>Helmet: <span :style="person.has_hardhat ? 'color:#34d399' : 'color:#f87171'">{{ person.has_hardhat ? 'OK' : 'NO' }}</span></div>
+                  <div>Vest: <span :style="person.has_safety_vest ? 'color:#34d399' : 'color:#f87171'">{{ person.has_safety_vest ? 'OK' : 'NO' }}</span></div>
+                  <div>Mask: <span :style="person.has_mask ? 'color:#34d399' : 'color:#f87171'">{{ person.has_mask ? 'OK' : 'NO' }}</span></div>
+                </div>
+                <div v-if="person.missing_items && person.missing_items.length > 0" style="color: #fbbf24; font-weight: 500; font-size: 0.7rem; margin-top: 0.15rem;">
+                  Missing: {{ person.missing_items.join(', ') }}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Perimeter Protection Panel -->
+          <div v-if="selectedEvent.analytics_data.perimeter_protection" class="drawer-section analytics-card" style="border: 1px solid rgba(245,158,11,0.25); background: rgba(245,158,11,0.03); padding: 0.75rem; border-radius: 8px; margin-bottom: 0.5rem;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+              <h3 style="font-size: 0.9rem; font-weight: 700; color: #fbbf24; display: flex; align-items: center; gap: 0.35rem; margin: 0; border: none; padding: 0;">
+                <i data-lucide="scan" style="width: 16px; height: 16px;"></i>
+                Perimeter Alert
+              </h3>
+              <span class="badge" :style="selectedEvent.analytics_data.perimeter_protection.breach ? 'background: rgba(239,68,68,0.15); color: #f87171;' : 'background: rgba(16,185,129,0.15); color: #34d399;'">
+                {{ selectedEvent.analytics_data.perimeter_protection.breach ? 'BREACH' : 'Secured' }}
+              </span>
+            </div>
+            <div style="font-size: 0.75rem; color: var(--text-muted);">
+              <div>Zone: <span style="color: var(--text-main); font-weight: 600;">{{ selectedEvent.analytics_data.perimeter_protection.zone_name || 'N/A' }}</span></div>
+              <div v-if="selectedEvent.analytics_data.perimeter_protection.objects && selectedEvent.analytics_data.perimeter_protection.objects.length > 0" style="margin-top: 0.35rem; display: flex; align-items: center; gap: 0.25rem;">
+                <span>Intruders:</span>
+                <span v-for="obj in selectedEvent.analytics_data.perimeter_protection.objects" :key="obj" class="badge-role" style="font-size: 0.6rem; padding: 0.05rem 0.2rem; background: rgba(239,68,68,0.15); color: #f87171; border: 1px solid rgba(239,68,68,0.3);">{{ obj }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Face Detection Panel -->
+          <div v-if="selectedEvent.analytics_data.face_detection" class="drawer-section analytics-card" style="border: 1px solid rgba(99,102,241,0.25); padding: 0.75rem; border-radius: 8px; margin-bottom: 0.5rem;">
+            <h3 style="font-size: 0.9rem; font-weight: 700; color: var(--accent-primary); display: flex; align-items: center; gap: 0.35rem; margin: 0 0 0.5rem 0; border: none; padding: 0;">
+              <i data-lucide="smile" style="width: 16px; height: 16px;"></i>
+              Faces Detected ({{ selectedEvent.analytics_data.face_detection.count || 0 }})
+            </h3>
+            <div v-if="selectedEvent.analytics_data.face_detection.details && selectedEvent.analytics_data.face_detection.details.length > 0" style="display: flex; flex-direction: column; gap: 0.35rem;">
+              <div v-for="(face, idx) in selectedEvent.analytics_data.face_detection.details" :key="idx" style="font-size: 0.75rem; color: var(--text-muted); display: flex; align-items: center; justify-content: space-between; background: rgba(255,255,255,0.02); padding: 0.4rem; border-radius: 4px; border: 1px solid rgba(255,255,255,0.05);">
+                <span style="font-weight: 600; color: var(--text-main);">Face #{{ idx + 1 }}</span>
+                <div style="display: flex; gap: 0.25rem;">
+                  <span class="badge-role" style="background: rgba(255,255,255,0.05); font-size: 0.6rem;">{{ face.attributes.gender }}</span>
+                  <span class="badge-role" style="background: rgba(255,255,255,0.05); font-size: 0.6rem;">Age {{ face.attributes.age }}</span>
+                  <span class="badge-role" style="background: rgba(255,255,255,0.05); font-size: 0.6rem; color: #fbbf24;">{{ face.attributes.emotion }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Face Recognition Panel -->
+          <div v-if="selectedEvent.analytics_data.face_recognition" class="drawer-section analytics-card" style="border: 1px solid rgba(16,185,129,0.25); padding: 0.75rem; border-radius: 8px; margin-bottom: 0.5rem;">
+            <h3 style="font-size: 0.9rem; font-weight: 700; color: #34d399; display: flex; align-items: center; gap: 0.35rem; margin: 0 0 0.5rem 0; border: none; padding: 0;">
+              <i data-lucide="user-check" style="width: 16px; height: 16px;"></i>
+              Personnel Identification
+            </h3>
+            <div v-if="selectedEvent.analytics_data.face_recognition.matches && selectedEvent.analytics_data.face_recognition.matches.length > 0" style="display: flex; flex-direction: column; gap: 0.35rem;">
+              <div v-for="(match, idx) in selectedEvent.analytics_data.face_recognition.matches" :key="idx" style="font-size: 0.75rem; color: var(--text-muted); display: flex; align-items: center; justify-content: space-between; background: rgba(0,0,0,0.2); padding: 0.4rem; border-radius: 4px;">
+                <div>
+                  <span style="color: var(--text-main); font-weight: 600;">{{ match.name }}</span>
+                  <span class="badge-role" style="font-size: 0.55rem; padding: 0.05rem 0.2rem; margin-left: 0.35rem; background: rgba(99, 102, 241, 0.15); color: var(--accent-primary);">{{ match.role }}</span>
+                </div>
+                <span style="color: #34d399; font-weight: 600;">{{ Math.round(match.confidence * 100) }}% match</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Video Metadata Panel -->
+          <div v-if="selectedEvent.analytics_data.video_metadata" class="drawer-section analytics-card" style="border: 1px solid rgba(255,255,255,0.1); padding: 0.75rem; border-radius: 8px; margin-bottom: 0.5rem;">
+            <h3 style="font-size: 0.9rem; font-weight: 700; color: var(--text-main); display: flex; align-items: center; gap: 0.35rem; margin: 0 0 0.5rem 0; border: none; padding: 0;">
+              <i data-lucide="database" style="width: 16px; height: 16px;"></i>
+              Target Metadata Attributes
+            </h3>
+            <div style="font-size: 0.75rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 0.5rem;">
+              <div v-if="selectedEvent.analytics_data.video_metadata.humans && selectedEvent.analytics_data.video_metadata.humans.length > 0">
+                <div style="font-weight: 600; color: var(--text-main); margin-bottom: 0.25rem;">Humans:</div>
+                <div v-for="(hum, idx) in selectedEvent.analytics_data.video_metadata.humans" :key="idx" style="background: rgba(255,255,255,0.02); padding: 0.35rem; border-radius: 4px; border: 1px solid rgba(255,255,255,0.04);">
+                  {{ hum.gender }} | Clothing: {{ hum.upper_clothing_color }}/{{ hum.lower_clothing_color }} | Backpack: {{ hum.backpack ? 'Yes' : 'No' }}
+                </div>
+              </div>
+              <div v-if="selectedEvent.analytics_data.video_metadata.motor_vehicles && selectedEvent.analytics_data.video_metadata.motor_vehicles.length > 0">
+                <div style="font-weight: 600; color: var(--text-main); margin-bottom: 0.25rem;">Motor Vehicles:</div>
+                <div v-for="(veh, idx) in selectedEvent.analytics_data.video_metadata.motor_vehicles" :key="idx" style="background: rgba(255,255,255,0.02); padding: 0.35rem; border-radius: 4px; border: 1px solid rgba(255,255,255,0.04);">
+                  {{ veh.color }} {{ veh.type }} (Model: {{ veh.brand || 'N/A' }})
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- People Counting Panel -->
+          <div v-if="selectedEvent.analytics_data.people_counting" class="drawer-section analytics-card" style="border: 1px solid rgba(99,102,241,0.2); padding: 0.75rem; border-radius: 8px; margin-bottom: 0.5rem;">
+            <h3 style="font-size: 0.9rem; font-weight: 700; color: var(--accent-primary); display: flex; align-items: center; gap: 0.35rem; margin: 0 0 0.5rem 0; border: none; padding: 0;">
+              <i data-lucide="users" style="width: 16px; height: 16px;"></i>
+              Line Crossing Counter
+            </h3>
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.35rem; text-align: center;">
+              <div style="background: rgba(255,255,255,0.03); padding: 0.4rem; border-radius: 4px;">
+                <div style="font-size: 0.65rem; color: var(--text-muted);">Current</div>
+                <div style="font-size: 1.1rem; font-weight: 700; color: var(--text-main);">{{ selectedEvent.analytics_data.people_counting.current_count || 0 }}</div>
+              </div>
+              <div style="background: rgba(255,255,255,0.03); padding: 0.4rem; border-radius: 4px;">
+                <div style="font-size: 0.65rem; color: #34d399;">In</div>
+                <div style="font-size: 1.1rem; font-weight: 700; color: #34d399;">{{ selectedEvent.analytics_data.people_counting.entered || 0 }}</div>
+              </div>
+              <div style="background: rgba(255,255,255,0.03); padding: 0.4rem; border-radius: 4px;">
+                <div style="font-size: 0.65rem; color: #f87171;">Out</div>
+                <div style="font-size: 1.1rem; font-weight: 700; color: #f87171;">{{ selectedEvent.analytics_data.people_counting.exited || 0 }}</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- SMD Plus Panel -->
+          <div v-if="selectedEvent.analytics_data.smd_plus" class="drawer-section analytics-card" style="border: 1px solid rgba(255,255,255,0.1); padding: 0.75rem; border-radius: 8px; margin-bottom: 0.5rem;">
+            <h3 style="font-size: 0.9rem; font-weight: 700; color: var(--text-main); display: flex; align-items: center; gap: 0.35rem; margin: 0 0 0.5rem 0; border: none; padding: 0;">
+              <i data-lucide="eye" style="width: 16px; height: 16px;"></i>
+              SMD Plus Filter
+            </h3>
+            <div style="font-size: 0.75rem; color: var(--text-muted);">
+              <div>Trigger: <span class="badge-role" style="background: rgba(99, 102, 241, 0.15); color: var(--accent-primary); font-weight: 600; text-transform: uppercase;">{{ selectedEvent.analytics_data.smd_plus.trigger_type }}</span></div>
+              <div style="margin-top: 0.25rem;">Confidence: <span style="color: #34d399; font-weight: 600;">{{ Math.round(selectedEvent.analytics_data.smd_plus.confidence * 100) }}%</span></div>
+              <div style="margin-top: 0.25rem; font-style: italic; color: var(--text-muted);">"{{ selectedEvent.analytics_data.smd_plus.description }}"</div>
+            </div>
+          </div>
+
+          <!-- Density & Crowd Panel -->
+          <div v-if="selectedEvent.analytics_data.vehicle_density || selectedEvent.analytics_data.crowd_distribution" class="drawer-section analytics-card" style="border: 1px solid rgba(255,255,255,0.1); padding: 0.75rem; border-radius: 8px; margin-bottom: 0.5rem; display: flex; flex-direction: column; gap: 0.5rem;">
+            <h3 style="font-size: 0.9rem; font-weight: 700; color: var(--text-main); display: flex; align-items: center; gap: 0.35rem; margin: 0; border: none; padding: 0;">
+              <i data-lucide="bar-chart-2" style="width: 16px; height: 16px;"></i>
+              Crowd & Vehicle Density
+            </h3>
+            <!-- Vehicle -->
+            <div v-if="selectedEvent.analytics_data.vehicle_density" style="font-size: 0.75rem; color: var(--text-muted); background: rgba(255,255,255,0.01); padding: 0.35rem; border-radius: 4px;">
+              <div>Traffic Congestion: <span style="color: #fbbf24; font-weight: 600; text-transform: uppercase;">{{ selectedEvent.analytics_data.vehicle_density.congestion_level }}</span></div>
+              <div>Vehicles: <span style="color: var(--text-main); font-weight: 600;">{{ selectedEvent.analytics_data.vehicle_density.vehicle_count }}</span></div>
+              <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.25rem;">
+                <span>Density:</span>
+                <div style="flex-grow: 1; height: 5px; background: rgba(255,255,255,0.1); border-radius: 2.5px; overflow: hidden;">
+                  <div :style="'width: ' + selectedEvent.analytics_data.vehicle_density.density_percentage + '%; height: 100%; background: var(--accent-primary);'"></div>
+                </div>
+                <span>{{ selectedEvent.analytics_data.vehicle_density.density_percentage }}%</span>
+              </div>
+            </div>
+            <!-- Crowd -->
+            <div v-if="selectedEvent.analytics_data.crowd_distribution" style="font-size: 0.75rem; color: var(--text-muted); background: rgba(255,255,255,0.01); padding: 0.35rem; border-radius: 4px;">
+              <div>Crowd Status: <span :style="selectedEvent.analytics_data.crowd_distribution.crowd_level === 'critical' || selectedEvent.analytics_data.crowd_distribution.crowd_level === 'high' ? 'color:#f87171; font-weight:600;' : 'color:#34d399; font-weight:600;'" style="text-transform: uppercase;">{{ selectedEvent.analytics_data.crowd_distribution.crowd_level }}</span></div>
+              <div>People present: <span style="color: var(--text-main); font-weight: 600;">{{ selectedEvent.analytics_data.crowd_distribution.estimated_count }}</span></div>
+              <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.25rem;">
+                <span>Density:</span>
+                <div style="flex-grow: 1; height: 5px; background: rgba(255,255,255,0.1); border-radius: 2.5px; overflow: hidden;">
+                  <div :style="'width: ' + selectedEvent.analytics_data.crowd_distribution.density_percentage + '%; height: 100%; background: #fbbf24;'"></div>
+                </div>
+                <span>{{ selectedEvent.analytics_data.crowd_distribution.density_percentage }}%</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Object & Sound Behavior Alarms -->
+          <div v-if="(selectedEvent.analytics_data.smart_object_detection && selectedEvent.analytics_data.smart_object_detection.alert_triggered) || (selectedEvent.analytics_data.smart_sound_detection && selectedEvent.analytics_data.smart_sound_detection.sound_alert_triggered)" class="drawer-section analytics-card" style="border: 1px solid rgba(239,68,68,0.25); background: rgba(239,68,68,0.03); padding: 0.75rem; border-radius: 8px; margin-bottom: 0.5rem; display: flex; flex-direction: column; gap: 0.5rem;">
+            <h3 style="font-size: 0.9rem; font-weight: 700; color: #f87171; display: flex; align-items: center; gap: 0.35rem; margin: 0; border: none; padding: 0;">
+              <i data-lucide="bell" style="width: 16px; height: 16px;"></i>
+              Behavior Alarm Triggers
+            </h3>
+            <div v-if="selectedEvent.analytics_data.smart_object_detection && selectedEvent.analytics_data.smart_object_detection.alert_triggered" style="font-size: 0.75rem; color: var(--text-muted);">
+              <div>Object Alarm: <span style="color: #fbbf24; font-weight: 600; text-transform: uppercase;">{{ selectedEvent.analytics_data.smart_object_detection.alert_type }}</span></div>
+              <div style="margin-top: 0.15rem; color: var(--text-main);">Details: {{ selectedEvent.analytics_data.smart_object_detection.details }}</div>
+            </div>
+            <div v-if="selectedEvent.analytics_data.smart_sound_detection && selectedEvent.analytics_data.smart_sound_detection.sound_alert_triggered" style="font-size: 0.75rem; color: var(--text-muted);">
+              <div>Sound Alarm: <span style="color: #f87171; font-weight: 600; text-transform: uppercase;">{{ selectedEvent.analytics_data.smart_sound_detection.inferred_sound_type }} DETECTED</span></div>
+              <div style="margin-top: 0.15rem; color: var(--text-main);">Details: {{ selectedEvent.analytics_data.smart_sound_detection.details }}</div>
+            </div>
+          </div>
+
         </div>
 
         <div class="drawer-section raw-response-section">
@@ -1725,6 +2496,11 @@ h1, h2, h3, h4, .brand-text {
   flex-direction: column;
   gap: 0.5rem;
   flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.05) transparent;
 }
 
 .nav-item {
@@ -2028,6 +2804,14 @@ h1, h2, h3, h4, .brand-text {
   font-weight: 800;
   font-family: 'Outfit', sans-serif;
   margin-top: 0.15rem;
+}
+
+.stat-sublabel {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  font-weight: 500;
+  margin-top: 0.2rem;
+  letter-spacing: 0.2px;
 }
 
 .text-green { color: var(--status-success); }
@@ -3380,4 +4164,151 @@ h1, h2, h3, h4, .brand-text {
 }
 
 .w-full { width: 100%; }
+
+/* Sidebar Nav Submenu Styles */
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.submenu-arrow {
+  margin-left: auto;
+  transition: transform 0.3s;
+  width: 14px !important;
+  height: 14px !important;
+}
+
+.submenu-arrow.rotated {
+  transform: rotate(180deg);
+}
+
+.nav-submenu {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding-left: 1rem;
+  margin-top: 0.15rem;
+  max-height: 320px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+.nav-submenu::-webkit-scrollbar {
+  width: 4px;
+}
+
+.nav-submenu::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.nav-submenu::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+
+.nav-submenu-item {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 0.45rem 0.75rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 550;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: all 0.2s;
+  text-align: left;
+}
+
+.nav-submenu-item i {
+  width: 14px;
+  height: 14px;
+  opacity: 0.7;
+}
+
+.nav-submenu-item:hover {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.nav-submenu-item.active {
+  color: #ffffff;
+  background: rgba(14, 165, 233, 0.15);
+  box-shadow: inset 0 0 0 1px rgba(14, 165, 233, 0.3);
+}
+
+/* Modal Overlay Styles */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(8px);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1500;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.modal-content {
+  width: 90%;
+  max-width: 460px;
+  background: rgba(10, 15, 30, 0.85) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 16px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  animation: scaleIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--card-border);
+  padding-bottom: 0.75rem;
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  border-top: 1px solid var(--card-border);
+  padding-top: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scaleIn {
+  from { transform: scale(0.95); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
 </style>

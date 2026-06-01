@@ -29,23 +29,11 @@ impl MinimaxProvider {
 
 #[async_trait]
 impl AiProvider for MinimaxProvider {
-    async fn analyze_image(&self, image_bytes: &[u8]) -> Result<String, AppError> {
+    async fn analyze_image(&self, image_bytes: &[u8], prompt: &str) -> Result<String, AppError> {
         let url = "https://api.minimax.io/v1/chat/completions";
 
         let image_b64 = BASE64_STANDARD.encode(image_bytes);
         let image_data_url = format!("data:image/jpeg;base64,{}", image_b64);
-
-        let prompt = "Extract the Bangladeshi vehicle license plate from this image. \
-                      Bangladeshi license plates have two lines:\
-                      - Top Line (e.g. 'ঢাকা মেট্রো ঘ' or 'সিলেট হ') containing the district, optionally the word 'মেট্রো', and a single vehicle class letter (ক to হ).\
-                      - Bottom Line (e.g. '১২-৩৪৫৬') containing exactly 6 digits formatted as XX-XXXX.\
-                      Provide your response in the following format:\
-                      LICENSE_PLATE:\
-                      [Top Line]\
-                      [Bottom Line]\
-                      \
-                      CONTEXT:\
-                      [Brief description of the vehicle type, color, and location context]";
 
         let payload = json!({
             "model": self.model_name,

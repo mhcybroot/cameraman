@@ -123,6 +123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         id: "default-cam".to_string(),
         name: "Default Camera".to_string(),
         location: Some("Entrance".to_string()),
+        enabled_modules: Some(serde_json::json!(["anpr"])),
         created_at: Some(chrono::Utc::now()),
     };
 
@@ -593,6 +594,7 @@ struct CreateCameraInput {
     id: Option<String>,
     name: String,
     location: Option<String>,
+    enabled_modules: Option<serde_json::Value>,
 }
 
 async fn create_camera_handler(
@@ -609,6 +611,7 @@ async fn create_camera_handler(
         id: camera_id,
         name: payload.name,
         location: payload.location,
+        enabled_modules: payload.enabled_modules.or_else(|| Some(serde_json::json!(["anpr"]))),
         created_at: Some(chrono::Utc::now()),
     };
 
@@ -619,6 +622,7 @@ async fn create_camera_handler(
         if let Some(existing) = cache.iter_mut().find(|c| c.id == new_camera.id) {
             existing.name = new_camera.name.clone();
             existing.location = new_camera.location.clone();
+            existing.enabled_modules = new_camera.enabled_modules.clone();
         } else {
             cache.push(new_camera.clone());
         }

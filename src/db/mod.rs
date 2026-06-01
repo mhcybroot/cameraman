@@ -15,6 +15,7 @@ pub struct ProcessedEvent {
     pub district: Option<String>,
     pub metro_prefix: Option<bool>,
     pub plate_number: Option<String>,
+    pub analytics_data: Option<serde_json::Value>,
     pub created_at: Option<DateTime<Utc>>,
 }
 
@@ -23,6 +24,7 @@ pub struct Camera {
     pub id: String,
     pub name: String,
     pub location: Option<String>,
+    pub enabled_modules: Option<serde_json::Value>,
     pub created_at: Option<DateTime<Utc>>,
 }
 
@@ -66,11 +68,17 @@ pub async fn connect_and_migrate(database_url: &str) -> Result<PgPool, sqlx::Err
             id VARCHAR(255) PRIMARY KEY,
             name VARCHAR(255) NOT NULL,
             location VARCHAR(255),
+            enabled_modules JSONB DEFAULT '[]'::jsonb,
             created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
         );"
     )
     .execute(&pool)
     .await?;
+
+    // Migrate existing cameras table if needed
+    let _ = sqlx::query("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS enabled_modules JSONB DEFAULT '[]'::jsonb;")
+        .execute(&pool)
+        .await;
 
     // 2. Create processed_events table
     sqlx::query(
@@ -85,11 +93,17 @@ pub async fn connect_and_migrate(database_url: &str) -> Result<PgPool, sqlx::Err
             district VARCHAR(100),
             metro_prefix BOOLEAN DEFAULT FALSE,
             plate_number VARCHAR(20),
+            analytics_data JSONB,
             created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
         );"
     )
     .execute(&pool)
     .await?;
+
+    // Migrate existing processed_events table if needed
+    let _ = sqlx::query("ALTER TABLE processed_events ADD COLUMN IF NOT EXISTS analytics_data JSONB;")
+        .execute(&pool)
+        .await;
 
     // 3. Create ai_configs table
     sqlx::query(
@@ -143,8 +157,8 @@ pub async fn save_event(
     sqlx::query(
         "INSERT INTO processed_events (
             id, camera_id, image_path, raw_ai_text, is_plate_valid, 
-            detected_plate_text, vehicle_class, district, metro_prefix, plate_number, created_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+            detected_plate_text, vehicle_class, district, metro_prefix, plate_number, analytics_data, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
     )
     .bind(event.id)
     .bind(&event.camera_id)
@@ -156,6 +170,7 @@ pub async fn save_event(
     .bind(&event.district)
     .bind(event.metro_prefix)
     .bind(&event.plate_number)
+    .bind(&event.analytics_data)
     .bind(event.created_at.unwrap_or_else(Utc::now))
     .execute(pool)
     .await?;
@@ -170,7 +185,7 @@ pub async fn get_events(
 ) -> Result<Vec<ProcessedEvent>, sqlx::Error> {
     let events = sqlx::query_as::<_, ProcessedEvent>(
         "SELECT id, camera_id, image_path, raw_ai_text, is_plate_valid, 
-                detected_plate_text, vehicle_class, district, metro_prefix, plate_number, created_at
+                detected_plate_text, vehicle_class, district, metro_prefix, plate_number, analytics_data, created_at
          FROM processed_events
          ORDER BY created_at DESC
          LIMIT $1"
@@ -188,14 +203,15 @@ pub async fn save_camera(
     camera: &Camera,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO cameras (id, name, location, created_at)
-         VALUES ($1, $2, $3, $4)
+        "INSERT INTO cameras (id, name, location, enabled_modules, created_at)
+         VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (id) DO UPDATE 
-         SET name = EXCLUDED.name, location = EXCLUDED.location"
+         SET name = EXCLUDED.name, location = EXCLUDED.location, enabled_modules = EXCLUDED.enabled_modules"
     )
     .bind(&camera.id)
     .bind(&camera.name)
     .bind(&camera.location)
+    .bind(&camera.enabled_modules)
     .bind(camera.created_at.unwrap_or_else(Utc::now))
     .execute(pool)
     .await?;
@@ -208,7 +224,7 @@ pub async fn get_cameras(
     pool: &PgPool,
 ) -> Result<Vec<Camera>, sqlx::Error> {
     let cameras = sqlx::query_as::<_, Camera>(
-        "SELECT id, name, location, created_at FROM cameras ORDER BY created_at DESC"
+        "SELECT id, name, location, enabled_modules, created_at FROM cameras ORDER BY created_at DESC"
     )
     .fetch_all(pool)
     .await?;
@@ -235,7 +251,7 @@ pub async fn get_camera_by_id(
     id: &str,
 ) -> Result<Option<Camera>, sqlx::Error> {
     let camera = sqlx::query_as::<_, Camera>(
-        "SELECT id, name, location, created_at FROM cameras WHERE id = $1"
+        "SELECT id, name, location, enabled_modules, created_at FROM cameras WHERE id = $1"
     )
     .bind(id)
     .fetch_optional(pool)

@@ -115,6 +115,7 @@ async fn process_incoming_image(
                         id: resolved_camera_id_clone.clone(),
                         name: format!("Auto Cam: {}", resolved_camera_id_clone),
                         location: None,
+                        enabled_modules: Some(serde_json::json!(["anpr"])),
                         created_at: Some(chrono::Utc::now()),
                     };
                     if let Err(e) = crate::db::save_camera(pool, &new_cam).await {
@@ -135,6 +136,7 @@ async fn process_incoming_image(
                     id: resolved_camera_id_clone.clone(),
                     name: format!("Auto Cam: {}", resolved_camera_id_clone),
                     location: None,
+                    enabled_modules: Some(serde_json::json!(["anpr"])),
                     created_at: Some(chrono::Utc::now()),
                 };
                 cache.push(new_cam);
@@ -190,7 +192,25 @@ async fn process_incoming_image(
             None => state.ai_provider.clone(),
         };
 
-        match provider.analyze_image(&image_bytes).await {
+        // 3. Retrieve camera enabled modules
+        let enabled_modules = if let Some(ref pool) = state.db_pool {
+            match crate::db::get_camera_by_id(pool, &resolved_camera_id).await {
+                Ok(Some(cam)) => cam.enabled_modules,
+                _ => None,
+            }
+        } else {
+            let cache = state.cameras_cache.read().await;
+            cache.iter().find(|c| c.id == resolved_camera_id).and_then(|c| c.enabled_modules.clone())
+        };
+
+        let modules_list: Vec<String> = enabled_modules
+            .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+            .unwrap_or_else(|| vec!["anpr".to_string()]);
+
+        // 4. Generate dynamic prompt
+        let prompt = crate::ai::prompts::build_cctv_prompt(&modules_list);
+
+        match provider.analyze_image(&image_bytes, &prompt).await {
             Ok(ocr_result) => {
                 tracing::info!(
                     "AI processing completed for image ID {}. Result:\n{}",
@@ -198,25 +218,69 @@ async fn process_incoming_image(
                     ocr_result
                 );
 
-                // Run Bangla License Plate Validation
-                let (is_valid, detected_plate, class_letter, district, metro, plate_num) = 
-                    match crate::validation::validate_plate(&ocr_result) {
+                // Helper function to clean markdown and parse JSON
+                let parse_ai_json = |raw_text: &str| -> Option<serde_json::Value> {
+                    let mut cleaned = raw_text.trim();
+                    if cleaned.starts_with("```json") {
+                        cleaned = cleaned.strip_prefix("```json").unwrap_or(cleaned);
+                    } else if cleaned.starts_with("```") {
+                        cleaned = cleaned.strip_prefix("```").unwrap_or(cleaned);
+                    }
+                    if cleaned.ends_with("```") {
+                        cleaned = cleaned.strip_suffix("```").unwrap_or(cleaned);
+                    }
+                    let cleaned = cleaned.trim();
+                    serde_json::from_str(cleaned).ok()
+                };
+
+                let mut is_valid = None;
+                let mut detected_plate = None;
+                let mut class_letter = None;
+                let mut district = None;
+                let mut metro = None;
+                let mut plate_num = None;
+                let mut analytics_json: Option<serde_json::Value> = None;
+                let mut parsed_raw_text = None;
+
+                if let Some(parsed_json) = parse_ai_json(&ocr_result) {
+                    analytics_json = Some(parsed_json.clone());
+                    
+                    // If anpr module was run, try to validate the extracted plate
+                    if let Some(anpr_val) = parsed_json.get("anpr") {
+                        if let Some(raw_text) = anpr_val.get("raw_text").and_then(|v| v.as_str()) {
+                            parsed_raw_text = Some(raw_text.to_string());
+                        } else if let (Some(top), Some(bot)) = (
+                            anpr_val.get("top_line").and_then(|v| v.as_str()),
+                            anpr_val.get("bottom_line").and_then(|v| v.as_str()),
+                        ) {
+                            parsed_raw_text = Some(format!("{}\n{}", top, bot));
+                        }
+                    }
+                } else {
+                    // Fallback if not parseable as JSON but anpr is in modules list
+                    if modules_list.contains(&"anpr".to_string()) {
+                        parsed_raw_text = Some(ocr_result.clone());
+                    }
+                }
+
+                if let Some(ref plate_text) = parsed_raw_text {
+                    match crate::validation::validate_plate(plate_text) {
                         Ok(plate) => {
                             tracing::info!("Bangla License Plate Validated successfully: {:?}", plate);
-                            (
-                                Some(true),
-                                Some(format!("{}\n{}", plate.top_line, plate.bottom_line)),
-                                Some(plate.class_letter.to_string()),
-                                Some(plate.district),
-                                Some(plate.metro),
-                                Some(plate.plate_number),
-                            )
+                            is_valid = Some(true);
+                            detected_plate = Some(format!("{}\n{}", plate.top_line, plate.bottom_line));
+                            class_letter = Some(plate.class_letter.to_string());
+                            district = Some(plate.district);
+                            metro = Some(plate.metro);
+                            plate_num = Some(plate.plate_number);
                         }
                         Err(err) => {
                             tracing::warn!("Bangla License Plate validation failed: {}", err);
-                            (Some(false), None, None, None, None, None)
+                            is_valid = Some(false);
+                            detected_plate = Some(plate_text.clone());
                         }
-                    };
+                    }
+                }
 
                 // Construct DB representation
                 let db_event = ProcessedEvent {
@@ -230,6 +294,7 @@ async fn process_incoming_image(
                     district,
                     metro_prefix: metro,
                     plate_number: plate_num,
+                    analytics_data: analytics_json,
                     created_at: Some(chrono::Utc::now()),
                 };
 
