@@ -3,6 +3,122 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 
 const currentModule = ref('dashboard')
 
+// Auth State
+const authToken = ref(localStorage.getItem('cameraman_token') || '')
+const authUser = ref(localStorage.getItem('cameraman_username') || '')
+const authRole = ref(localStorage.getItem('cameraman_role') || '')
+
+const loginForm = ref({
+  username: '',
+  password: ''
+})
+const loginError = ref('')
+const isLoggingIn = ref(false)
+
+const handleLogin = async () => {
+  if (!loginForm.value.username.trim() || !loginForm.value.password.trim()) {
+    loginError.value = 'Username and password are required'
+    return
+  }
+  loginError.value = ''
+  isLoggingIn.value = true
+  try {
+    const response = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(loginForm.value)
+    })
+    if (response.ok) {
+      const data = await response.json()
+      authToken.value = data.token
+      authUser.value = data.username
+      authRole.value = data.role
+      
+      localStorage.setItem('cameraman_token', data.token)
+      localStorage.setItem('cameraman_username', data.username)
+      localStorage.setItem('cameraman_role', data.role)
+      
+      loginForm.value = { username: '', password: '' }
+      
+      // Load data
+      await fetchEvents()
+      await fetchCameras()
+      await fetchAiConfigs()
+      if (authRole.value === 'admin') {
+        await fetchUsers()
+      }
+      
+      currentModule.value = 'dashboard'
+    } else {
+      const err = await response.json()
+      loginError.value = err.message || 'Login failed'
+    }
+  } catch (error) {
+    loginError.value = 'Connection error logging in'
+    console.error(error)
+  } finally {
+    isLoggingIn.value = false
+    nextTick(() => {
+      if (window.lucide) {
+        window.lucide.createIcons()
+      }
+    })
+  }
+}
+
+const handleLogout = async () => {
+  try {
+    await fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${authToken.value}`
+      }
+    })
+  } catch (e) {
+    console.error('Logout error:', e)
+  }
+  
+  authToken.value = ''
+  authUser.value = ''
+  authRole.value = ''
+  localStorage.removeItem('cameraman_token')
+  localStorage.removeItem('cameraman_username')
+  localStorage.removeItem('cameraman_role')
+  
+  events.value = []
+  cameras.value = []
+  aiConfigs.value = []
+  users.value = []
+  currentModule.value = 'dashboard'
+  
+  nextTick(() => {
+    if (window.lucide) {
+      window.lucide.createIcons()
+    }
+  })
+}
+
+// Authenticated Fetch Wrapper
+const authFetch = async (url, options = {}) => {
+  const headers = options.headers || {}
+  if (authToken.value) {
+    headers['Authorization'] = `Bearer ${authToken.value}`
+  }
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...headers
+    }
+  })
+  if (response.status === 401 && url !== '/api/auth/login') {
+    handleLogout()
+  }
+  return response
+}
+
 const events = ref([])
 const selectedEvent = ref(null)
 const autoRefresh = ref(true)
@@ -51,8 +167,9 @@ watch(events, (newVal, oldVal) => {
 
 // Fetch database records
 const fetchEvents = async () => {
+  if (!authToken.value) return
   try {
-    const response = await fetch('/api/events')
+    const response = await authFetch('/api/events')
     if (response.ok) {
       const data = await response.json()
       events.value = data
@@ -175,7 +292,7 @@ const formatFullDateTime = (timeStr) => {
 const startTimer = () => {
   refreshCountdown.value = 3
   refreshInterval = setInterval(async () => {
-    if (autoRefresh.value) {
+    if (autoRefresh.value && authToken.value) {
       refreshCountdown.value--
       if (refreshCountdown.value <= 0) {
         await fetchEvents()
@@ -186,10 +303,14 @@ const startTimer = () => {
 }
 
 const triggerManualRefresh = async () => {
+  if (!authToken.value) return
   addLog('info', 'Refreshing system data...')
   await fetchEvents()
   await fetchCameras()
   await fetchAiConfigs()
+  if (authRole.value === 'admin') {
+    await fetchUsers()
+  }
   addLog('success', 'System data refreshed successfully.')
 }
 
@@ -203,8 +324,9 @@ const addCameraError = ref('')
 const isAddingCamera = ref(false)
 
 const fetchCameras = async () => {
+  if (!authToken.value) return
   try {
-    const response = await fetch('/api/cameras')
+    const response = await authFetch('/api/cameras')
     if (response.ok) {
       cameras.value = await response.json()
     }
@@ -214,6 +336,7 @@ const fetchCameras = async () => {
 }
 
 const addCamera = async () => {
+  if (authRole.value !== 'admin') return
   if (!newCamera.value.name.trim()) {
     addCameraError.value = 'Camera Name is required'
     return
@@ -221,11 +344,8 @@ const addCamera = async () => {
   addCameraError.value = ''
   isAddingCamera.value = true
   try {
-    const response = await fetch('/api/cameras', {
+    const response = await authFetch('/api/cameras', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
       body: JSON.stringify({
         id: newCamera.value.id.trim() || undefined,
         name: newCamera.value.name.trim(),
@@ -254,11 +374,12 @@ const addCamera = async () => {
 }
 
 const deleteCamera = async (id) => {
+  if (authRole.value !== 'admin') return
   if (!confirm(`Are you sure you want to unregister camera ${id}?`)) {
     return
   }
   try {
-    const response = await fetch(`/api/cameras/${id}`, {
+    const response = await authFetch(`/api/cameras/${id}`, {
       method: 'DELETE'
     })
     if (response.ok) {
@@ -304,8 +425,9 @@ watch(() => newAiConfig.value.provider_type, (newType) => {
 })
 
 const fetchAiConfigs = async () => {
+  if (!authToken.value) return
   try {
-    const response = await fetch('/api/ai-configs')
+    const response = await authFetch('/api/ai-configs')
     if (response.ok) {
       aiConfigs.value = await response.json()
     }
@@ -319,6 +441,7 @@ const activeAiConfig = computed(() => {
 })
 
 const addAiConfig = async () => {
+  if (authRole.value !== 'admin') return
   if (!newAiConfig.value.name.trim()) {
     addAiConfigError.value = 'Configuration Name is required'
     return
@@ -332,11 +455,8 @@ const addAiConfig = async () => {
   addAiConfigError.value = ''
   isAddingAiConfig.value = true
   try {
-    const response = await fetch('/api/ai-configs', {
+    const response = await authFetch('/api/ai-configs', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
       body: JSON.stringify({
         name: newAiConfig.value.name.trim(),
         provider_type: newAiConfig.value.provider_type,
@@ -374,11 +494,12 @@ const addAiConfig = async () => {
 }
 
 const deleteAiConfig = async (id) => {
+  if (authRole.value !== 'admin') return
   if (!confirm('Are you sure you want to delete this AI configuration?')) {
     return
   }
   try {
-    const response = await fetch(`/api/ai-configs/${id}`, {
+    const response = await authFetch(`/api/ai-configs/${id}`, {
       method: 'DELETE'
     })
     if (response.ok) {
@@ -391,8 +512,9 @@ const deleteAiConfig = async (id) => {
 }
 
 const activateAiConfig = async (id) => {
+  if (authRole.value !== 'admin') return
   try {
-    const response = await fetch(`/api/ai-configs/${id}/activate`, {
+    const response = await authFetch(`/api/ai-configs/${id}/activate`, {
       method: 'POST'
     })
     if (response.ok) {
@@ -402,6 +524,105 @@ const activateAiConfig = async (id) => {
     }
   } catch (error) {
     console.error('Failed to activate AI configuration:', error)
+  }
+}
+
+// User Management State & Actions
+const users = ref([])
+const newUser = ref({
+  username: '',
+  password: '',
+  role: 'user'
+})
+const addUserError = ref('')
+const isAddingUser = ref(false)
+
+const fetchUsers = async () => {
+  if (!authToken.value || authRole.value !== 'admin') return
+  try {
+    const response = await authFetch('/api/users')
+    if (response.ok) {
+      users.value = await response.json()
+    }
+  } catch (error) {
+    console.error('Failed to fetch users:', error)
+  }
+}
+
+const addUser = async () => {
+  if (authRole.value !== 'admin') return
+  if (!newUser.value.username.trim()) {
+    addUserError.value = 'Username is required'
+    return
+  }
+  addUserError.value = ''
+  isAddingUser.value = true
+  try {
+    const response = await authFetch('/api/users', {
+      method: 'POST',
+      body: JSON.stringify({
+        username: newUser.value.username.trim(),
+        password: newUser.value.password.trim() || undefined,
+        role: newUser.value.role
+      })
+    })
+    if (response.ok) {
+      addLog('success', `Created User: "${newUser.value.username}"`)
+      newUser.value = { username: '', password: '', role: 'user' }
+      await fetchUsers()
+    } else {
+      const err = await response.json()
+      addUserError.value = err.message || 'Failed to create user'
+    }
+  } catch (error) {
+    addUserError.value = 'Network error creating user'
+  } finally {
+    isAddingUser.value = false
+    nextTick(() => {
+      if (window.lucide) {
+        window.lucide.createIcons()
+      }
+    })
+  }
+}
+
+const toggleBlockUser = async (id) => {
+  if (authRole.value !== 'admin') return
+  try {
+    const response = await authFetch(`/api/users/${id}/toggle-block`, {
+      method: 'POST'
+    })
+    if (response.ok) {
+      addLog('info', `Toggled block state on user profile: ${id}`)
+      await fetchUsers()
+    }
+  } catch (error) {
+    console.error('Failed to toggle block status:', error)
+  }
+}
+
+const resetUserPassword = async (id) => {
+  if (authRole.value !== 'admin') return
+  const newPass = prompt('Enter the new password for this user:')
+  if (newPass === null) return
+  if (!newPass.trim()) {
+    alert('Password cannot be empty')
+    return
+  }
+  try {
+    const response = await authFetch(`/api/users/${id}/reset-password`, {
+      method: 'POST',
+      body: JSON.stringify({ new_password: newPass.trim() })
+    })
+    if (response.ok) {
+      alert('Password updated successfully')
+      addLog('success', `Reset password for user profile: ${id}`)
+    } else {
+      const err = await response.json()
+      alert(err.message || 'Failed to reset password')
+    }
+  } catch (error) {
+    console.error('Failed to reset password:', error)
   }
 }
 
@@ -419,29 +640,8 @@ watch(currentModule, () => {
   })
 })
 
-const getModuleTitle = () => {
-  switch (currentModule.value) {
-    case 'dashboard': return 'Surveillance Dashboard'
-    case 'events': return 'Recognition Feed'
-    case 'cameras': return 'Camera Registry'
-    case 'ai': return 'AI Provider Settings'
-    case 'diagnostics': return 'System Diagnostics'
-    default: return 'Cameraman'
-  }
-}
-
-const getModuleSubtitle = () => {
-  switch (currentModule.value) {
-    case 'dashboard': return 'Real-time surveillance overview, statistics, and breakdowns'
-    case 'events': return 'Grid of captured motion events and license plate parsing results'
-    case 'cameras': return 'Register and manage CCTV webhook-connected cameras'
-    case 'ai': return 'Manage provider credentials and runtime model selection'
-    case 'diagnostics': return 'Real-time terminal view of system logs and developer API simulation'
-    default: return ''
-  }
-}
-
 const triggerSimulatedLog = async () => {
+  if (authRole.value !== 'admin') return
   addLog('info', '[Simulation] Dispatching mock POST /api/webhooks/camera payload...')
   try {
     const response = await fetch('/api/webhooks/camera', {
@@ -457,7 +657,6 @@ const triggerSimulatedLog = async () => {
     
     if (response.ok) {
       addLog('success', '[Simulation] Webhook request accepted by server.')
-      // Wait a moment for background AI processing to complete, then reload
       setTimeout(async () => {
         await fetchEvents()
         addLog('success', '[Simulation] Events refreshed. New event added!')
@@ -470,11 +669,60 @@ const triggerSimulatedLog = async () => {
   }
 }
 
+const getModuleTitle = () => {
+  switch (currentModule.value) {
+    case 'dashboard':
+      return 'Surveillance Dashboard'
+    case 'events':
+      return 'CCTV Activity Log'
+    case 'cameras':
+      return 'Camera Registry'
+    case 'ai':
+      return 'AI Configs Manager'
+    case 'users':
+      return 'Users Administration'
+    case 'diagnostics':
+      return 'Diagnostics Console'
+    default:
+      return 'System Portal'
+  }
+}
+
+const getModuleSubtitle = () => {
+  switch (currentModule.value) {
+    case 'dashboard':
+      return 'Real-time statistics and traffic monitoring analytics'
+    case 'events':
+      return 'All processed plate detection events and OCR telemetry'
+    case 'cameras':
+      return 'Manage registered CCTV stream feeds and ingestion hooks'
+    case 'ai':
+      return 'Manage and switch active Vision API models at runtime'
+    case 'users':
+      return 'Manage portal users, reset passwords, and toggle blocks'
+    case 'diagnostics':
+      return 'Simulate camera triggers and monitor real-time server diagnostics logs'
+    default:
+      return 'CCTV AI License Plate Processor'
+  }
+}
+
 onMounted(async () => {
-  await fetchEvents()
-  await fetchCameras()
-  await fetchAiConfigs()
-  startTimer()
+  if (authToken.value) {
+    await fetchEvents()
+    await fetchCameras()
+    await fetchAiConfigs()
+    if (authRole.value === 'admin') {
+      await fetchUsers()
+    }
+    startTimer()
+  } else {
+    nextTick(() => {
+      if (window.lucide) {
+        window.lucide.createIcons()
+      }
+    })
+  }
 })
 
 onUnmounted(() => {
@@ -485,7 +733,41 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app-layout">
+  <!-- 1. LOGIN SCREEN WALL (shown if missing token) -->
+  <div v-if="!authToken" class="login-overlay">
+    <div class="login-card">
+      <div class="login-brand">
+        <div class="logo-icon">
+          <i data-lucide="eye" style="color: white; width: 22px; height: 22px;"></i>
+        </div>
+        <span class="brand-text">CAMERAMAN LOGIN</span>
+      </div>
+      <p class="login-subtitle">Access the AI CCTV surveillance portal</p>
+      
+      <form @submit.prevent="handleLogin" class="login-form-fields">
+        <div class="form-group">
+          <label>Username</label>
+          <input type="text" placeholder="Enter username" v-model="loginForm.username" required>
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" placeholder="Enter password" v-model="loginForm.password" required>
+        </div>
+        
+        <div v-if="loginError" class="form-error">
+          {{ loginError }}
+        </div>
+        
+        <button type="submit" class="submit-btn w-full" :disabled="isLoggingIn">
+          <i data-lucide="log-in" style="width: 16px; height: 16px; display: inline-block; vertical-align: middle; margin-right: 4px;"></i>
+          {{ isLoggingIn ? 'Logging in...' : 'Sign In' }}
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- 2. MAIN APPLICATION WORKSPACE -->
+  <div v-else class="app-layout">
     <!-- Left Navigation Bar -->
     <aside class="sidebar-nav">
       <div class="nav-brand">
@@ -533,6 +815,16 @@ onUnmounted(() => {
         </button>
 
         <button 
+          v-if="authRole === 'admin'"
+          class="nav-item" 
+          :class="{ active: currentModule === 'users' }" 
+          @click="currentModule = 'users'"
+        >
+          <i data-lucide="users"></i>
+          <span>Users</span>
+        </button>
+
+        <button 
           class="nav-item" 
           :class="{ active: currentModule === 'diagnostics' }" 
           @click="currentModule = 'diagnostics'"
@@ -543,9 +835,21 @@ onUnmounted(() => {
       </div>
 
       <div class="nav-footer">
-        <div class="live-indicator">
-          <span class="pulse-green"></span>
-          <span>Live Ingestion</span>
+        <div class="user-profile-card">
+          <div class="user-profile-info">
+            <div class="profile-avatar">
+              <i data-lucide="user" style="width: 14px; height: 14px; color: white;"></i>
+            </div>
+            <div class="profile-text" style="display: flex; flex-direction: column; align-items: flex-start; gap: 0.15rem;">
+              <div class="profile-username">{{ authUser }}</div>
+              <span class="badge-role" :class="authRole" style="font-size: 0.55rem; padding: 0.05rem 0.25rem;">
+                {{ authRole }}
+              </span>
+            </div>
+          </div>
+          <button class="logout-btn" @click="handleLogout" title="Sign Out">
+            <i data-lucide="log-out" style="width: 14px; height: 14px;"></i>
+          </button>
         </div>
       </div>
     </aside>
@@ -831,7 +1135,7 @@ onUnmounted(() => {
               <h2 class="panel-title">Registered Cameras</h2>
               <div v-if="cameras.length === 0" class="panel-empty" style="min-height: 250px;">
                 <i data-lucide="video-off"></i>
-                <p>No registered cameras. Add one from the right panel.</p>
+                <p>No registered cameras.</p>
               </div>
               <div v-else class="cameras-cards-grid">
                 <div v-for="cam in cameras" :key="cam.id" class="camera-detail-card">
@@ -864,8 +1168,8 @@ onUnmounted(() => {
                     </div>
                   </div>
 
-                  <!-- Actions -->
-                  <div class="camera-actions-row">
+                  <!-- Actions (Admin only) -->
+                  <div v-if="authRole === 'admin'" class="camera-actions-row">
                     <button class="delete-btn-card" @click="deleteCamera(cam.id)">
                       <i data-lucide="trash-2" style="width: 13px; height: 13px; display: inline-block; vertical-align: middle; margin-right: 4px;"></i>
                       Unregister Camera
@@ -875,9 +1179,9 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <!-- Right Side: Register Form -->
+            <!-- Right Side: Register Form (Admin) / Read Only Banner (User) -->
             <div class="form-panel-side">
-              <div class="add-camera-form" style="border: none; padding-top: 0;">
+              <div v-if="authRole === 'admin'" class="add-camera-form" style="border: none; padding-top: 0;">
                 <h3 class="form-title">Register New Camera</h3>
                 
                 <div class="form-group">
@@ -903,6 +1207,13 @@ onUnmounted(() => {
                   <i data-lucide="plus-circle" style="width: 16px; height: 16px;"></i>
                   {{ isAddingCamera ? 'Registering...' : 'Register Camera' }}
                 </button>
+              </div>
+              <div v-else class="read-only-banner" style="text-align: left;">
+                <i data-lucide="shield-alert" style="color: var(--accent-primary); width: 32px; height: 32px; margin-bottom: 0.5rem;"></i>
+                <h4 style="font-weight: 700; margin-bottom: 0.25rem;">View-Only Mode</h4>
+                <p style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.4;">
+                  Standard operators cannot register or unregister cameras. Requires Administrator credentials.
+                </p>
               </div>
             </div>
           </div>
@@ -945,7 +1256,8 @@ onUnmounted(() => {
                     </div>
                   </div>
 
-                  <div class="ai-card-actions">
+                  <!-- Actions (Admin only) -->
+                  <div v-if="authRole === 'admin'" class="ai-card-actions">
                     <button 
                       v-if="!config.is_active" 
                       class="activate-btn" 
@@ -963,9 +1275,9 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <!-- Right Side: Add Config Form -->
+            <!-- Right Side: Add Config Form (Admin) / Read Only (User) -->
             <div class="form-panel-side">
-              <div class="add-camera-form" style="border: none; padding-top: 0;">
+              <div v-if="authRole === 'admin'" class="add-camera-form" style="border: none; padding-top: 0;">
                 <h3 class="form-title">Add AI Configuration</h3>
                 
                 <div class="form-group">
@@ -1006,6 +1318,102 @@ onUnmounted(() => {
                   {{ isAddingAiConfig ? 'Saving...' : 'Save AI Configuration' }}
                 </button>
               </div>
+              <div v-else class="read-only-banner" style="text-align: left;">
+                <i data-lucide="shield-alert" style="color: var(--accent-primary); width: 32px; height: 32px; margin-bottom: 0.5rem;"></i>
+                <h4 style="font-weight: 700; margin-bottom: 0.25rem;">View-Only Mode</h4>
+                <p style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.4;">
+                  Standard operators cannot register, toggle, or delete AI configurations. Requires Administrator credentials.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ==================== USERS MODULE ==================== -->
+        <div v-else-if="currentModule === 'users' && authRole === 'admin'" class="module-view users-view">
+          <div class="cameras-layout-grid">
+            <!-- Left Side: User list -->
+            <div class="cameras-panel">
+              <h2 class="panel-title">System Users</h2>
+              <div class="users-list-table-container">
+                <table class="users-table">
+                  <thead>
+                    <tr>
+                      <th>Username</th>
+                      <th>Role</th>
+                      <th>Status</th>
+                      <th>Created At</th>
+                      <th style="text-align: right;">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="u in users" :key="u.id" :class="{ 'user-row-blocked': u.is_blocked }">
+                      <td class="font-weight-bold" style="font-weight: 700;">{{ u.username }}</td>
+                      <td>
+                        <span class="badge-role" :class="u.role">{{ u.role }}</span>
+                      </td>
+                      <td>
+                        <span class="status-indicator-text" :class="u.is_blocked ? 'blocked' : 'active'">
+                          {{ u.is_blocked ? 'Blocked' : 'Active' }}
+                        </span>
+                      </td>
+                      <td class="font-mono" style="font-size: 0.75rem; color: var(--text-muted);">
+                        {{ formatFullDateTime(u.created_at) }}
+                      </td>
+                      <td style="text-align: right;">
+                        <div class="user-action-buttons">
+                          <button class="action-btn-sm" @click="resetUserPassword(u.id)" title="Reset Password">
+                            <i data-lucide="key" style="width: 14px; height: 14px;"></i>
+                          </button>
+                          <button 
+                            v-if="u.username !== 'admin'"
+                            class="action-btn-sm" 
+                            :class="u.is_blocked ? 'unblock-btn' : 'block-btn'"
+                            @click="toggleBlockUser(u.id)" 
+                            :title="u.is_blocked ? 'Unblock user' : 'Block user'"
+                          >
+                            <i :data-lucide="u.is_blocked ? 'unlock' : 'lock'" style="width: 14px; height: 14px;"></i>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Right Side: Add User Form -->
+            <div class="form-panel-side">
+              <div class="add-camera-form" style="border: none; padding-top: 0;">
+                <h3 class="form-title">Create User Account</h3>
+                
+                <div class="form-group">
+                  <label>Username *</label>
+                  <input type="text" placeholder="Enter username" v-model="newUser.username">
+                </div>
+
+                <div class="form-group">
+                  <label>Password (optional, default 123456)</label>
+                  <input type="password" placeholder="Enter password" v-model="newUser.password">
+                </div>
+
+                <div class="form-group">
+                  <label>Role *</label>
+                  <select class="filter-select w-full" v-model="newUser.role">
+                    <option value="user">Standard User</option>
+                    <option value="admin">Administrator</option>
+                  </select>
+                </div>
+
+                <div v-if="addUserError" class="form-error">
+                  {{ addUserError }}
+                </div>
+
+                <button class="submit-btn" :disabled="isAddingUser" @click="addUser">
+                  <i data-lucide="user-plus" style="width: 16px; height: 16px;"></i>
+                  {{ isAddingUser ? 'Creating...' : 'Create Account' }}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1022,7 +1430,12 @@ onUnmounted(() => {
                   <span class="btn-dot zoom"></span>
                 </div>
                 <span class="terminal-title">cameraman_diagnostics_stream.log</span>
-                <button class="clear-terminal-btn" @click="systemLogs = []" title="Clear console">
+                <button 
+                  class="clear-terminal-btn" 
+                  :disabled="authRole !== 'admin'" 
+                  @click="systemLogs = []" 
+                  title="Clear console"
+                >
                   <i data-lucide="trash-2" style="width: 14px; height: 14px; display: inline-block; vertical-align: middle; margin-right: 4px;"></i>
                   Clear
                 </button>
@@ -1059,10 +1472,18 @@ onUnmounted(() => {
   http://localhost:8080/api/webhooks/camera</pre>
                   </div>
                   
-                  <button class="submit-btn outline w-full" @click="triggerSimulatedLog" style="margin-top: 1rem;">
+                  <button 
+                    class="submit-btn outline w-full" 
+                    :disabled="authRole !== 'admin'" 
+                    @click="triggerSimulatedLog" 
+                    style="margin-top: 1rem;"
+                  >
                     <i data-lucide="terminal" style="width: 16px; height: 16px;"></i>
                     Simulate Webhook event
                   </button>
+                  <p v-if="authRole !== 'admin'" style="font-size: 0.7rem; color: var(--status-error); margin-top: 0.5rem; text-align: left;">
+                    * Simulation triggers require Administrator privileges.
+                  </p>
                 </div>
               </div>
             </div>
@@ -1209,6 +1630,56 @@ h1, h2, h3, h4, .brand-text {
   overflow: hidden;
 }
 
+/* Login overlay styles */
+.login-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  background-color: var(--bg-color);
+  background-image: 
+    radial-gradient(circle at 50% 50%, rgba(99, 102, 241, 0.2) 0%, transparent 60%),
+    radial-gradient(circle at 10% 10%, rgba(239, 68, 68, 0.05) 0%, transparent 35%);
+}
+
+.login-card {
+  background: rgba(20, 22, 45, 0.65);
+  backdrop-filter: blur(25px);
+  border: 1px solid var(--card-border);
+  width: 100%;
+  max-width: 400px;
+  padding: 2.5rem;
+  border-radius: 20px;
+  box-shadow: 0 15px 50px rgba(0, 0, 0, 0.5), 0 0 30px var(--accent-glow);
+  text-align: center;
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.login-subtitle {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 2rem;
+}
+
+.login-form-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  text-align: left;
+}
+
 /* Sidebar Navigation */
 .sidebar-nav {
   width: 250px;
@@ -1302,6 +1773,73 @@ h1, h2, h3, h4, .brand-text {
   font-size: 0.75rem;
   color: var(--text-muted);
   font-weight: 600;
+  margin-bottom: 0.75rem;
+}
+
+/* User Profile Card in Nav */
+.user-profile-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(17, 19, 39, 0.8);
+  border: 1px solid var(--card-border);
+  padding: 0.75rem;
+  border-radius: 12px;
+  margin-top: 0.5rem;
+}
+
+.user-profile-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  text-align: left;
+}
+
+.profile-avatar {
+  background: var(--accent-primary);
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+
+.profile-username {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-main);
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge-role {
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.badge-role.admin { background: rgba(16, 185, 129, 0.2); color: var(--status-success); border: 1px solid rgba(16, 185, 129, 0.3); }
+.badge-role.user { background: rgba(99, 102, 241, 0.2); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.3); }
+
+.logout-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0.25rem;
+  border-radius: 4px;
+  transition: all 0.3s;
+}
+
+.logout-btn:hover {
+  color: var(--status-error);
+  background: rgba(239, 68, 68, 0.1);
 }
 
 /* Pulse effects */
@@ -2143,6 +2681,13 @@ h1, h2, h3, h4, .brand-text {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
 }
 
+.read-only-banner {
+  border: 1px dashed var(--card-border);
+  padding: 1.5rem;
+  border-radius: 12px;
+  background: rgba(99, 102, 241, 0.02);
+}
+
 /* AI Config Styles */
 .ai-configs-grid {
   display: grid;
@@ -2274,6 +2819,105 @@ h1, h2, h3, h4, .brand-text {
   color: white;
 }
 
+/* Users Table Styles */
+.users-list-table-container {
+  overflow-x: auto;
+}
+
+.users-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.users-table th {
+  padding: 0.75rem 1rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--card-border);
+}
+
+.users-table td {
+  padding: 1rem;
+  font-size: 0.85rem;
+  border-bottom: 1px solid var(--card-border);
+}
+
+.users-table tr:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.user-row-blocked {
+  opacity: 0.6;
+}
+
+.status-indicator-text {
+  font-size: 0.75rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.status-indicator-text::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.status-indicator-text.active { color: var(--status-success); }
+.status-indicator-text.active::before { background: var(--status-success); }
+.status-indicator-text.blocked { color: var(--status-error); }
+.status-indicator-text.blocked::before { background: var(--status-error); }
+
+.user-action-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.action-btn-sm {
+  background: rgba(17, 19, 39, 0.6);
+  border: 1px solid var(--card-border);
+  color: var(--text-muted);
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.action-btn-sm:hover {
+  color: var(--text-main);
+  border-color: var(--accent-primary);
+  background: rgba(99, 102, 241, 0.1);
+}
+
+.action-btn-sm.block-btn:hover {
+  color: var(--status-error);
+  border-color: var(--status-error);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.action-btn-sm.unblock-btn {
+  color: var(--status-error);
+  border-color: var(--status-error);
+  background: rgba(239, 68, 68, 0.05);
+}
+
+.action-btn-sm.unblock-btn:hover {
+  color: var(--status-success);
+  border-color: var(--status-success);
+  background: rgba(16, 185, 129, 0.1);
+}
+
 /* Diagnostics & Live logs styles */
 .diagnostics-layout {
   display: grid;
@@ -2336,8 +2980,13 @@ h1, h2, h3, h4, .brand-text {
   transition: color 0.3s;
 }
 
-.clear-terminal-btn:hover {
+.clear-terminal-btn:hover:not(:disabled) {
   color: var(--status-error);
+}
+
+.clear-terminal-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .terminal-body {
@@ -2350,6 +2999,15 @@ h1, h2, h3, h4, .brand-text {
   display: flex;
   flex-direction: column-reverse; /* Shows latest logs on top */
   gap: 0.5rem;
+}
+
+.terminal-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.terminal-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
 }
 
 .terminal-line {

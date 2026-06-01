@@ -16,6 +16,8 @@ pub enum AppError {
     AiProvider(String),
     InvalidPayload(String),
     Database(String),
+    Authentication(String),
+    Authorization(String),
 }
 
 impl fmt::Display for AppError {
@@ -29,6 +31,8 @@ impl fmt::Display for AppError {
             AppError::AiProvider(msg) => write!(f, "AI Provider error: {}", msg),
             AppError::InvalidPayload(msg) => write!(f, "Invalid payload error: {}", msg),
             AppError::Database(msg) => write!(f, "Database error: {}", msg),
+            AppError::Authentication(msg) => write!(f, "Authentication error: {}", msg),
+            AppError::Authorization(msg) => write!(f, "Authorization error: {}", msg),
         }
     }
 }
@@ -78,6 +82,8 @@ impl IntoResponse for AppError {
             AppError::AiProvider(msg) => (StatusCode::BAD_GATEWAY, msg),
             AppError::InvalidPayload(msg) => (StatusCode::BAD_REQUEST, msg),
             AppError::Database(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+            AppError::Authentication(msg) => (StatusCode::UNAUTHORIZED, msg),
+            AppError::Authorization(msg) => (StatusCode::FORBIDDEN, msg),
         };
 
         let body = Json(json!({

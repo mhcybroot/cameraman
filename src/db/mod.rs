@@ -37,6 +37,23 @@ pub struct AiConfig {
     pub created_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct User {
+    pub id: Uuid,
+    pub username: String,
+    pub password_hash: String,
+    pub role: String, // "admin" or "user"
+    pub is_blocked: bool,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct UserSession {
+    pub token: Uuid,
+    pub user_id: Uuid,
+    pub expires_at: DateTime<Utc>,
+}
+
 /// Initializes database connection pool and creates schema if missing
 pub async fn connect_and_migrate(database_url: &str) -> Result<PgPool, sqlx::Error> {
     tracing::info!("Connecting to PostgreSQL...");
@@ -84,6 +101,31 @@ pub async fn connect_and_migrate(database_url: &str) -> Result<PgPool, sqlx::Err
             model_name VARCHAR(100),
             is_active BOOLEAN DEFAULT FALSE,
             created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        );"
+    )
+    .execute(&pool)
+    .await?;
+
+    // 4. Create users table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS users (
+            id UUID PRIMARY KEY,
+            username VARCHAR(100) UNIQUE NOT NULL,
+            password_hash VARCHAR(255) NOT NULL,
+            role VARCHAR(50) NOT NULL,
+            is_blocked BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        );"
+    )
+    .execute(&pool)
+    .await?;
+
+    // 5. Create user_sessions table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS user_sessions (
+            token UUID PRIMARY KEY,
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            expires_at TIMESTAMPTZ NOT NULL
         );"
     )
     .execute(&pool)
@@ -290,4 +332,129 @@ pub async fn get_active_ai_config(
     .await?;
 
     Ok(config)
+}
+
+/// Inserts or updates a user record
+pub async fn save_user(
+    pool: &PgPool,
+    user: &User,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO users (id, username, password_hash, role, is_blocked, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (id) DO UPDATE 
+         SET username = EXCLUDED.username, 
+             password_hash = EXCLUDED.password_hash, 
+             role = EXCLUDED.role, 
+             is_blocked = EXCLUDED.is_blocked"
+    )
+    .bind(user.id)
+    .bind(&user.username)
+    .bind(&user.password_hash)
+    .bind(&user.role)
+    .bind(user.is_blocked)
+    .bind(user.created_at.unwrap_or_else(Utc::now))
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Retrieves a user by username
+pub async fn get_user_by_username(
+    pool: &PgPool,
+    username: &str,
+) -> Result<Option<User>, sqlx::Error> {
+    let user = sqlx::query_as::<_, User>(
+        "SELECT id, username, password_hash, role, is_blocked, created_at 
+         FROM users 
+         WHERE username = $1"
+    )
+    .bind(username)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(user)
+}
+
+/// Retrieves a user by ID
+pub async fn get_user_by_id(
+    pool: &PgPool,
+    id: uuid::Uuid,
+) -> Result<Option<User>, sqlx::Error> {
+    let user = sqlx::query_as::<_, User>(
+        "SELECT id, username, password_hash, role, is_blocked, created_at 
+         FROM users 
+         WHERE id = $1"
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(user)
+}
+
+/// Fetches all users
+pub async fn get_all_users(
+    pool: &PgPool,
+) -> Result<Vec<User>, sqlx::Error> {
+    let users = sqlx::query_as::<_, User>(
+        "SELECT id, username, password_hash, role, is_blocked, created_at 
+         FROM users 
+         ORDER BY username ASC"
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(users)
+}
+
+/// Inserts a session token
+pub async fn save_session(
+    pool: &PgPool,
+    session: &UserSession,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO user_sessions (token, user_id, expires_at)
+         VALUES ($1, $2, $3)"
+    )
+    .bind(session.token)
+    .bind(session.user_id)
+    .bind(session.expires_at)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Retrieves a user associated with a valid, non-expired session token
+pub async fn get_session_user(
+    pool: &PgPool,
+    token: uuid::Uuid,
+) -> Result<Option<User>, sqlx::Error> {
+    let user = sqlx::query_as::<_, User>(
+        "SELECT u.id, u.username, u.password_hash, u.role, u.is_blocked, u.created_at 
+         FROM users u
+         JOIN user_sessions s ON u.id = s.user_id
+         WHERE s.token = $1 AND s.expires_at > $2"
+    )
+    .bind(token)
+    .bind(Utc::now())
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(user)
+}
+
+/// Deletes a session token (logout)
+pub async fn delete_session(
+    pool: &PgPool,
+    token: uuid::Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM user_sessions WHERE token = $1")
+        .bind(token)
+        .execute(pool)
+        .await?;
+
+    Ok(())
 }

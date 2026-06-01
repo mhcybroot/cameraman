@@ -12,4 +12,6 @@ pub struct AppState {
     pub cameras_cache: Arc<RwLock<Vec<Camera>>>,
     pub events_cache: Arc<RwLock<Vec<ProcessedEvent>>>,
     pub ai_configs_cache: Arc<RwLock<Vec<AiConfig>>>,
+    pub users_cache: Arc<RwLock<Vec<crate::db::User>>>,
+    pub sessions_cache: Arc<RwLock<Vec<crate::db::UserSession>>>,
 }
